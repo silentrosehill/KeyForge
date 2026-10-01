@@ -1,6 +1,8 @@
 # KeyForge
 
-A macOS app to remap keys, run shortcuts and macros, and control the RGB lighting of a Razer Huntsman V2, without Razer Synapse. Key remapping works with any keyboard. Made with Claude, sister app of [MP3 Tagger](https://github.com/silentrosehill/MP3Tagger).
+HIIII, other keyboard remapper/ RGB modifier scked for me, so i made claude make myself this:
+A macOS app to remap keys, run shortcuts and macros, and control the RGB lighting of a Razer Huntsman V2, without Razer Synapse. Key remapping works with any keyboard. i dont take any credit for the code.
+I VIBECODED IT WIT CLAUDE ORIGINALLY FOR PERSONAL USE BUT IDK MAYBE SOMEONE NEED SOMETHING SIMILAR <3<3, sister app of [MP3 Tagger](https://github.com/silentrosehill/MP3Tagger).
 
 ![Keys](Screenshots/keys.png)
 ![Lighting](Screenshots/lighting.png)
