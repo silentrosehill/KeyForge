@@ -106,6 +106,8 @@ final class KeyTap: ObservableObject {
     var iso = true { didSet { if iso != oldValue { rebuild() } } }
     /// Someone (Ripple, Heatmap) wants to hear key presses.
     var listeners: [String: (Usage) -> Void] = [:] { didSet { ensureRunning() } }
+    /// mouse button number → what it does, from the active profiles (any mouse)
+    var mouse: [Int: MouseAction] = [:] { didSet { Self.byButton = Dictionary(uniqueKeysWithValues: mouse.map { (Int64($0.key), $0.value) }); ensureRunning() } }
 
     @Published private(set) var trusted = KeyTap.hasAccess
     @Published private(set) var running = false
@@ -114,10 +116,12 @@ final class KeyTap: ObservableObject {
     nonisolated static let marker: Int64 = 0x4B46_4B46
     /// vk code → action (what the tap callback looks up)
     nonisolated(unsafe) private static var byVK: [Int64: KeyAction] = [:]
+    /// mouse button → bind (what the tap callback looks up)
+    nonisolated(unsafe) private static var byButton: [Int64: MouseAction] = [:]
     nonisolated(unsafe) private static var tap: CFMachPort?
     private var trustTimer: Timer?
 
-    var needed: Bool { !actions.isEmpty || !listeners.isEmpty }
+    var needed: Bool { !actions.isEmpty || !listeners.isEmpty || !mouse.isEmpty }
 
     private func rebuild() {
         var m: [Int64: KeyAction] = [:]
@@ -182,7 +186,10 @@ final class KeyTap: ObservableObject {
 
     private func startTap() {
         guard Self.tap == nil else { trusted = true; return }
+        // keys, plus the extra mouse buttons (left/right clicks and mouse moves never go through KeyForge)
         let mask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue)
+            | (1 << CGEventType.otherMouseDown.rawValue) | (1 << CGEventType.otherMouseUp.rawValue)
+            | (1 << CGEventType.otherMouseDragged.rawValue)
         guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
                                           eventsOfInterest: CGEventMask(mask), callback: { _, type, event, _ in
             KeyTap.handle(type, event)
@@ -201,6 +208,15 @@ final class KeyTap: ObservableObject {
             return Unmanaged.passUnretained(event)
         }
         if event.getIntegerValueField(.eventSourceUserData) == marker { return Unmanaged.passUnretained(event) }
+        if type == .otherMouseDown || type == .otherMouseUp || type == .otherMouseDragged {
+            let button = event.getIntegerValueField(.mouseEventButtonNumber)
+            guard let bind = byButton[button] else { return Unmanaged.passUnretained(event) }
+            if type != .otherMouseDragged {
+                let down = type == .otherMouseDown, at = event.location
+                DispatchQueue.main.async { MainActor.assumeIsolated { MouseRunner.handle(bind, down: down, at: at) } }
+            }
+            return nil   // the button's own click is swallowed
+        }
         let vk = event.getIntegerValueField(.keyboardEventKeycode)
         let action = byVK[vk]
         if type == .keyDown {
@@ -308,7 +324,22 @@ final class Heatmap: ObservableObject {
 /// Shortcut / text / app / macro editor for the selected key.
 struct ActionEditor: View {
     @ObservedObject var store: ProfileStore
-    let key: Usage
+    /// what's being edited: a key's action or a mouse button's
+    let read: () -> KeyAction?
+    let write: (KeyAction?) -> Void
+    /// The Key / Shortcut / … switch (the Mouse tab has its own).
+    var showKinds = true
+
+    init(store: ProfileStore, key: Usage) {
+        let st = store
+        self.store = st
+        read = { st.active?.actions[key] }
+        write = { st.setAction(key, $0) }
+    }
+
+    init(store: ProfileStore, showKinds: Bool, read: @escaping () -> KeyAction?, write: @escaping (KeyAction?) -> Void) {
+        self.store = store; self.showKinds = showKinds; self.read = read; self.write = write
+    }
     @ObservedObject private var tap = KeyTap.shared
     @ObservedObject private var live = LiveKeys.shared
     @StateObject private var draft = Draft()
@@ -318,14 +349,16 @@ struct ActionEditor: View {
         @Published var stepText = ""
     }
 
-    private var action: KeyAction? { store.active?.actions[key] }
+    private var action: KeyAction? { read() }
 
     var body: some View {
         let kind = action?.kind ?? .key
         VStack(alignment: .leading, spacing: 12) {
-            GlassSegmented(selection: Binding(get: { kind }, set: { k in switchKind(k) }),
-                           options: KeyAction.Kind.allCases.map { ($0, $0.rawValue) })
-                .frame(maxWidth: 560)
+            if showKinds {
+                GlassSegmented(selection: Binding(get: { kind }, set: { k in switchKind(k) }),
+                               options: KeyAction.Kind.allCases.map { ($0, $0.rawValue) })
+                    .frame(maxWidth: 560)
+            }
 
             switch action {
             case .shortcut(let s):
@@ -335,12 +368,12 @@ struct ActionEditor: View {
                         .font(.body.monospaced().weight(.semibold))
                         .padding(.horizontal, 10).padding(.vertical, 4)
                         .background(Capsule().fill(Color.primary.opacity(0.07)))
-                    recordButton { store.setAction(key, .shortcut($0)) }
+                    recordButton { write(.shortcut($0)) }
                 }
             case .text(let t):
                 HStack(spacing: 10) {
                     Text("Types").foregroundStyle(.secondary)
-                    TextField("Text to type", text: Binding(get: { t }, set: { store.setAction(key, .text($0)) }))
+                    TextField("Text to type", text: Binding(get: { t }, set: { write(.text($0)) }))
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 380)
                 }
@@ -351,7 +384,7 @@ struct ActionEditor: View {
                         Image(nsImage: NSWorkspace.shared.icon(forFile: path)).resizable().frame(width: 22, height: 22)
                         Text(KeyAction.app(path).label(iso: store.iso)).fontWeight(.semibold)
                     }
-                    Button(path.isEmpty ? "Choose App…" : "Change…") { chooseApp { store.setAction(key, .app($0)) } }
+                    Button(path.isEmpty ? "Choose App…" : "Change…") { chooseApp { write(.app($0)) } }
                         .buttonStyle(.purpleGlass)
                 }
             case .macro(let steps):
@@ -376,11 +409,11 @@ struct ActionEditor: View {
     private func switchKind(_ k: KeyAction.Kind) {
         live.recorder = nil; live.shortcutRecorder = nil
         switch k {
-        case .key: store.setAction(key, nil)
-        case .shortcut: store.setAction(key, .shortcut(Shortcut(keyCode: 0, modifiers: 0))); startRecording { store.setAction(key, .shortcut($0)) }
-        case .text: store.setAction(key, .text(""))
-        case .app: store.setAction(key, .app("")); chooseApp { store.setAction(key, .app($0)) }
-        case .macro: store.setAction(key, .macro([]))
+        case .key: write(nil)
+        case .shortcut: write(.shortcut(Shortcut(keyCode: 0, modifiers: 0))); startRecording { write(.shortcut($0)) }
+        case .text: write(.text(""))
+        case .app: write(.app("")); chooseApp { write(.app($0)) }
+        case .macro: write(.macro([]))
         }
         if k != .key { tap.ensureRunning(); if !tap.trusted { tap.requestAccess() } }
     }
@@ -416,7 +449,7 @@ struct ActionEditor: View {
                     HStack(spacing: 4) {
                         Text(step.label(iso: store.iso)).lineLimit(1)
                         Button {
-                            var s = steps; s.remove(at: i); store.setAction(key, .macro(s))
+                            var s = steps; s.remove(at: i); write(.macro(s))
                         } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
                         .buttonStyle(.plain)
                     }
@@ -427,13 +460,13 @@ struct ActionEditor: View {
                 }
             }
             HStack(spacing: 8) {
-                recordButton { s in store.setAction(key, .macro(steps + [.shortcut(s)])) }
+                recordButton { s in write(.macro(steps + [.shortcut(s)])) }
                     .help("Add a shortcut step: press it after clicking")
                 TextField("Text step", text: $draft.stepText)
                     .textFieldStyle(.roundedBorder).frame(width: 180)
                     .onSubmit { addText(steps) }
                 Button("Add Text") { addText(steps) }.buttonStyle(.purpleGlass).disabled(draft.stepText.isEmpty)
-                Button("Add Wait") { store.setAction(key, .macro(steps + [.wait(0.3)])) }.buttonStyle(.purpleGlass)
+                Button("Add Wait") { write(.macro(steps + [.wait(0.3)])) }.buttonStyle(.purpleGlass)
                     .help("Pause 0.3 s between steps")
             }
         }
@@ -441,7 +474,7 @@ struct ActionEditor: View {
 
     private func addText(_ steps: [MacroStep]) {
         guard !draft.stepText.isEmpty else { return }
-        store.setAction(key, .macro(steps + [.text(draft.stepText)]))
+        write(.macro(steps + [.text(draft.stepText)]))
         draft.stepText = ""
     }
 }

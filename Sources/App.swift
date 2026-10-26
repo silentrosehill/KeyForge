@@ -80,7 +80,7 @@ final class UIState: ObservableObject {
     @Published var showTheme = false
     @Published var showSettings = false
     @Published var mode: Mode = .keys
-    enum Mode { case keys, lighting }
+    enum Mode { case keys, mouse, lighting }
 }
 
 struct ContentView: View {
@@ -130,13 +130,13 @@ struct ContentView: View {
             LiveKeys.shared.install { ProfileStore.shared.iso }
             if ProcessInfo.processInfo.environment["KEYFORGE_STRESS"] != nil { StressTest.run() }
             if ProcessInfo.processInfo.environment["KEYFORGE_HUD"] != nil {   // screenshot helper for the profile popup
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { ProfileHUD.show("Gaming", auto: true) }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { ProfileHUD.show("Gaming", reason: "🎮 Game: Townfall-Win64-Shipping.exe") }
             }
             // screenshot helper: KEYFORGE_SELECT=<hex usage> opens the editor for that key
             if let h = ProcessInfo.processInfo.environment["KEYFORGE_SELECT"], let u = UInt64(h, radix: 16) { ui.selected = u }
         }
         .onChange(of: store.activeID) { ui.selected = nil; LiveKeys.shared.recorder = nil }
-        .onChange(of: store.device) { if !store.selectedHasLighting { ui.mode = .keys } }
+        .onChange(of: store.device) { if !store.selectedHasLighting && ui.mode == .lighting { ui.mode = .keys } }
         .environment(\.appTheme, themeStore.rendered)
         .environment(\.glassTint, themeStore.glassTint)
         .tint(themeStore.rendered.accent)
@@ -242,8 +242,8 @@ struct ProfileRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(profile.name).font(.body.weight(active ? .semibold : .regular)).lineLimit(1)
-                let n = profile.map.count + profile.actions.count
-                Text(n == 0 ? "No changes" : "\(n) key\(n == 1 ? "" : "s") changed")
+                let n = profile.map.count + profile.actions.count + profile.mouse.count
+                Text(n == 0 ? "No changes" : "\(n) change\(n == 1 ? "" : "s")")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
@@ -378,11 +378,18 @@ struct DetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 header
+                if ui.mode != .lighting { GameModeCard(store: store) }
+                if ui.mode == .mouse {
+                    MouseTab(store: store)
+                } else {
                 KeyboardView(store: store, selected: $ui.selected,
                              lighting: ui.mode == .lighting && store.selectedHasLighting ? (store.active?.lighting ?? .standard) : nil)
                     .frame(maxWidth: 1240)
                     .frame(maxWidth: .infinity)
-                if ui.mode == .lighting {
+                }
+                if ui.mode == .mouse {
+                    EmptyView()
+                } else if ui.mode == .lighting {
                     LightingCard(store: store)
                 } else if let sel = ui.selected {
                     KeyEditor(store: store, key: sel, ui: ui).id(sel)
@@ -406,7 +413,10 @@ struct DetailView: View {
         )
         .contentShape(Rectangle())
         .onTapGesture { withAnimation { ui.selected = nil } }
-        .onAppear { if ProcessInfo.processInfo.environment["KEYFORGE_LIGHTING"] != nil { ui.mode = .lighting } }
+        .onAppear {
+            if ProcessInfo.processInfo.environment["KEYFORGE_LIGHTING"] != nil { ui.mode = .lighting }
+            if ProcessInfo.processInfo.environment["KEYFORGE_MOUSE"] != nil { ui.mode = .mouse }   // screenshot helper
+        }
     }
 
     private var header: some View {
@@ -419,14 +429,11 @@ struct DetailView: View {
                     .padding(.top, 2)
             }
             Spacer()
-            if store.selectedHasLighting {
-                GlassSegmented(selection: Binding(get: { ui.mode }, set: { ui.mode = $0; ui.selected = nil; LiveKeys.shared.recorder = nil }),
-                               options: [(.keys, "Keys"), (.lighting, "Lighting")])
-                    .frame(width: 220)
-            } else {
-                // KeyForge can only light the Razer Huntsman V2
-                Color.clear.frame(width: 220, height: 1)
-            }
+            // KeyForge can only light the Razer Huntsman V2
+            GlassSegmented(selection: Binding(get: { ui.mode }, set: { ui.mode = $0; ui.selected = nil; LiveKeys.shared.recorder = nil }),
+                           options: store.selectedHasLighting ? [(.keys, "Keys"), (.mouse, "Mouse"), (.lighting, "Lighting")]
+                                                              : [(.keys, "Keys"), (.mouse, "Mouse")])
+                .frame(width: store.selectedHasLighting ? 300 : 210)
             Spacer()
             if ui.mode == .keys { keyButtons } else { Color.clear.frame(width: 250, height: 1) }
         }

@@ -13,29 +13,66 @@ enum AppWatcher {
         observer = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { note in
             let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-            let id = app?.bundleIdentifier
+            MainActor.assumeIsolated { changed(app) }
+        }
+        // the app already in front when KeyForge starts (or the one right behind KeyForge's own window)
+        lastPID = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+        ProfileStore.shared.frontAppChanged(frontmostOther)
+        // belt and braces: also look once a second (Wine games don't always announce that they came to the front)
+        poll = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
             MainActor.assumeIsolated {
-                if let p = ProfileStore.shared.frontAppChanged(id) { ProfileHUD.show(p.name, auto: ProfileStore.shared.autoActive) }
+                guard let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != lastPID else { return }
+                changed(app)
             }
         }
-        // the app already in front when KeyForge starts
-        ProfileStore.shared.frontAppChanged(NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
+    }
+
+    private static var lastPID: pid_t = 0
+
+    /// The frontmost app that isn't KeyForge, from the on-screen window order.
+    static var frontmostOther: NSRunningApplication? {
+        let me = ProcessInfo.processInfo.processIdentifier
+        if let f = NSWorkspace.shared.frontmostApplication, f.processIdentifier != me { return f }
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        for w in windows where (w[kCGWindowLayer as String] as? Int) == 0 {
+            guard let pid = w[kCGWindowOwnerPID as String] as? pid_t, pid != me,
+                  let app = NSRunningApplication(processIdentifier: pid), app.activationPolicy == .regular else { continue }
+            return app
+        }
+        return nil
+    }
+    private static var poll: Timer?
+
+    private static func changed(_ app: NSRunningApplication?) {
+        guard let app else { return }
+        lastPID = app.processIdentifier
+        let store = ProfileStore.shared
+        if let p = store.frontAppChanged(app) { ProfileHUD.show(p.name, reason: store.lastSwitchReason) }
+    }
+
+    /// What a profile stores for an app: its bundle ID, or "exe:<name>" for Windows programs (they have none).
+    static func key(for app: NSRunningApplication) -> String {
+        app.bundleIdentifier ?? "exe:\(app.localizedName ?? app.executableURL?.lastPathComponent ?? "?")"
     }
 
     /// Apps worth offering in the "+" menu: what's running with a Dock icon.
     static var runningApps: [(name: String, id: String, icon: NSImage?)] {
-        NSWorkspace.shared.runningApplications
-            .filter { $0.activationPolicy == .regular && $0.bundleIdentifier != nil && $0.bundleIdentifier != Bundle.main.bundleIdentifier }
-            .map { ($0.localizedName ?? $0.bundleIdentifier!, $0.bundleIdentifier!, $0.icon) }
+        var seen = Set<String>()
+        return NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular && $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
+            .map { (($0.localizedName ?? key(for: $0)), key(for: $0), $0.icon) }
+            .filter { seen.insert($0.1).inserted }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     static func name(of bundleID: String) -> String {
+        if bundleID.hasPrefix("exe:") { return String(bundleID.dropFirst(4)) }
         guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return bundleID }
         return FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: "")
     }
 
     static func icon(of bundleID: String) -> NSImage {
+        if bundleID.hasPrefix("exe:") { return NSImage(systemSymbolName: "gamecontroller.fill", accessibilityDescription: nil) ?? NSImage() }
         guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
             return NSImage(systemSymbolName: "app.dashed", accessibilityDescription: nil) ?? NSImage()
         }
@@ -91,9 +128,6 @@ struct AutoSwitchRow: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .help("While this app is in front, this profile is on; it switches back when you leave it")
-                if store.autoActive {
-                    Text("· on because of the app in front").font(.caption).foregroundStyle(.secondary)
-                }
             }
         }
     }
@@ -131,7 +165,7 @@ enum ProfileHotkeys {
                         guard index < list.count else { return }
                         let p = list[index]
                         store.select(p.id)
-                        ProfileHUD.show(p.name, auto: false)
+                        ProfileHUD.show(p.name, reason: "Profile")
                     }
                 }
                 return noErr
@@ -159,8 +193,9 @@ enum ProfileHUD {
     private static var panel: NSPanel?
     private static var hide: DispatchWorkItem?
 
-    static func show(_ name: String, auto: Bool) {
-        let host = NSHostingView(rootView: HUDView(name: name, auto: auto)
+    /// Shows "Gaming · 🎮 Game: …" in the top-left corner, above everything (full-screen games included).
+    static func show(_ name: String, reason: String) {
+        let host = NSHostingView(rootView: HUDView(name: name, reason: reason)
             .environment(\.appTheme, ThemeStore.shared.rendered)
             .environment(\.glassTint, ThemeStore.shared.glassTint))
         let size = host.fittingSize
@@ -169,41 +204,125 @@ enum ProfileHUD {
             p.isOpaque = false
             p.backgroundColor = .clear
             p.hasShadow = false
-            p.level = .statusBar
+            // above full-screen games (they can sit above the normal status-bar level)
+            p.level = NSWindow.Level(rawValue: Int(CGShieldingWindowLevel()) + 1)
             p.ignoresMouseEvents = true
-            p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+            p.hidesOnDeactivate = false
+            p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
             return p
         }()
         panel = p
         p.contentView = host
-        let screen = NSScreen.main?.visibleFrame ?? .zero
-        p.setFrame(NSRect(x: screen.midX - size.width / 2, y: screen.minY + 110, width: size.width, height: size.height), display: true)
+        // the screen you're looking at: the one with the pointer
+        let mouse = NSEvent.mouseLocation
+        let screen = (NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main)?.visibleFrame ?? .zero
+        let end = NSRect(x: screen.minX + 14, y: screen.maxY - size.height - 10, width: size.width, height: size.height)
+        p.setFrame(end.offsetBy(dx: -24, dy: 0), display: true)
         p.alphaValue = 0
         p.orderFrontRegardless()
-        NSAnimationContext.runAnimationGroup { $0.duration = 0.15; p.animator().alphaValue = 1 }
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.22
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            p.animator().alphaValue = 1
+            p.animator().setFrame(end, display: true)
+        }
         hide?.cancel()
         let work = DispatchWorkItem {
-            NSAnimationContext.runAnimationGroup({ $0.duration = 0.35; p.animator().alphaValue = 0 }, completionHandler: { p.orderOut(nil) })
+            NSAnimationContext.runAnimationGroup({ $0.duration = 0.4; p.animator().alphaValue = 0 }, completionHandler: { p.orderOut(nil) })
         }
         hide = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.3, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: work)
     }
 
     private struct HUDView: View {
         let name: String
-        let auto: Bool
+        let reason: String
         @Environment(\.appTheme) private var theme
         var body: some View {
-            HStack(spacing: 12) {
-                Image(systemName: "keyboard.fill").font(.system(size: 22, weight: .semibold)).foregroundStyle(theme.purple)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(name).font(.system(size: 17, weight: .bold))
-                    Text(auto ? "Switched for the app in front" : "Profile").font(.caption).foregroundStyle(.secondary)
+            let icon = reason.hasPrefix("🎮") ? "gamecontroller.fill" : reason.hasPrefix("🖥") ? "desktopcomputer" : "keyboard.fill"
+            let detail = reason.replacingOccurrences(of: "🎮 ", with: "").replacingOccurrences(of: "🖥 ", with: "")
+            HStack(spacing: 11) {
+                Image(systemName: icon).font(.system(size: 19, weight: .semibold)).foregroundStyle(theme.purple)
+                    .frame(width: 26)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(name).font(.system(size: 15, weight: .bold))
+                    Text(detail).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
-            .padding(.horizontal, 22).padding(.vertical, 14)
+            .padding(.leading, 14).padding(.trailing, 18).padding(.vertical, 10)
+            .frame(maxWidth: 340, alignment: .leading)
+            .background(Capsule().fill(Color.black.opacity(0.25)))   // stays readable over bright games
             .liquidGlass(Capsule())
-            .padding(10)
+            .padding(8)
+        }
+    }
+}
+
+// MARK: - Game Mode
+
+/// One card: a switch, "In a game → X", "Everywhere else → Y", and what's happening right now.
+struct GameModeCard: View {
+    @ObservedObject var store: ProfileStore
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
+        let on = store.gameModeOn
+        let profiles = store.visible
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "gamecontroller.fill").font(.system(size: 18, weight: .semibold)).foregroundStyle(theme.purple)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Game Mode").font(.headline)
+                    Text(on ? "KeyForge picks the profile for you, by the app in front"
+                            : "Switch profiles by themselves when you play and when you stop")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Toggle("Game Mode", isOn: Binding(get: { on }, set: { v in withAnimation { store.setGameMode(v) } }))
+                    .toggleStyle(.switch).labelsHidden()
+            }
+            if on {
+                HStack(spacing: 18) {
+                    choice("🎮 In a game", store.gameProfile, profiles) { store.gameProfile = $0; store.setGameMode(true) }
+                    choice("🖥 Everywhere else", store.desktopProfile, profiles) { store.desktopProfile = $0; store.setGameMode(true) }
+                    Spacer()
+                }
+                // live status
+                HStack(spacing: 6) {
+                    Circle().fill(store.frontApp?.isGame == true ? Color.green : theme.purple).frame(width: 7, height: 7)
+                    if let f = store.frontApp {
+                        Text("Now: \(store.active?.name ?? "–")").fontWeight(.semibold)
+                        Text(f.isGame ? "because the game \(f.name) is in front" : "because \(f.name) is in front (not a game)")
+                            .foregroundStyle(.secondary).lineLimit(1)
+                    } else {
+                        Text("Waiting for an app to come to the front…").foregroundStyle(.secondary)
+                    }
+                }
+                .font(.callout)
+                Text("Games are found by themselves: Windows games in CrossOver/Wine, Steam games and Mac games. Launchers like Steam count as desktop.")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
+        }
+        .padding(14)
+        .background {
+            let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
+            shape.fill(on ? theme.purple.opacity(0.10) : Color.primary.opacity(0.05))
+                .overlay(shape.strokeBorder(Color.primary.opacity(0.09), lineWidth: 0.5))
+        }
+    }
+
+    private func choice(_ title: String, _ current: UUID?, _ profiles: [Profile], set: @escaping (UUID?) -> Void) -> some View {
+        HStack(spacing: 6) {
+            Text(title).font(.callout).foregroundStyle(.secondary)
+            Image(systemName: "arrow.right").font(.caption.weight(.bold)).foregroundStyle(.tertiary)
+            Menu {
+                ForEach(profiles) { p in
+                    Button { set(p.id) } label: { if current == p.id { Label(p.name, systemImage: "checkmark") } else { Text(p.name) } }
+                }
+            } label: {
+                Text(store.profile(current)?.name ?? "Pick a profile").font(.callout.weight(.semibold))
+            }
+            .modifier(GlassMenuLabel())
         }
     }
 }
