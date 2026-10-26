@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.10.0 (build 23)
+- Mouse Lighting in the Mouse tab: Sync with the keyboard, Solid, Per Zone, Breathing, Cycle, Wave and Off, with brightness and speed, the color presets, Pick from Screen, a custom color and your saved colors
+- Works with the Logitech G203 LIGHTSYNC (3 zones), the Razer Viper Ultimate (wired and wireless) and the Razer Mouse Dock, over USB with no Logitech or Razer software
+- Sync copies the keyboard's color and effect and follows profile and Game Mode switches; with Per Key it lights the 3 zones with the keys under your hand
+- Saved per profile; a profile with Mouse Lighting off leaves the mouse alone. Colors are re-sent when a mouse is plugged in
+- The on-screen mouse glows in its light colors
+
+## 1.9.1 (build 22)
+- The profile popup now slides in at the top left of the screen you are using, above everything, full-screen games included, so you see it when a game starts too. A game controller icon for games, a desktop icon for the desktop
+
+## 1.9.0 (build 21)
+- Game Mode, rebuilt to be simple: one card with an on/off switch, "🎮 In a game → profile" and "🖥 Everywhere else → profile". Turning it on picks sensible profiles by itself (and makes a Gaming profile if you have none)
+- A live line shows what's on and why ("Now: Gaming because the game Townfall-Win64-Shipping.exe is in front")
+- Fix: switching could miss Windows games in CrossOver. KeyForge now also checks the app in front once a second
+- "Add App" now lists Windows programs (CrossOver/Wine) too, by name
+- Every automatic switch is written to ~/Library/Logs/KeyForge.log
+
+## 1.8.2 (build 20)
+- Fix: on macOS 26 the icon sat on a light grey plate. It now follows Apple's icon grid, so it shows edge to edge like other apps
+
+## 1.8.1 (build 19)
+- New icon (made with Codex): a Liquid Glass K keycap with the sunset glow
+
+## 1.8.0 (build 18)
+- New Mouse tab, for any mouse: give the middle, back, forward and extra buttons a job. Hold a key while the button is held (push-to-talk, crouch, media keys), act as another mouse button, send a shortcut, type text, open an app, run a macro, or do nothing. "Find a Button" picks up extra side buttons. Left and right click always stay as they are
+- Mouse binds belong to the profile, so a game profile can have its own
+- Game ↔ Desktop: pick a Game profile and a Desktop profile under the profile name. KeyForge switches by itself when any game comes to the front (Mac games, Steam games, and Windows games in CrossOver/Wine) and back when you leave it; launchers like Steam don't count
+- The profile popup says why it switched ("Game: …", "Back to the desktop")
+
 ## 1.7.1 (build 17)
 - New icon: the frosted K keycap in sunset glass, pink to purple with an orange, pink and purple glow underneath
 

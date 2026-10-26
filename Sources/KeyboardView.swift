@@ -10,12 +10,26 @@ final class LiveKeys: ObservableObject {
     @Published var recorder: ((Usage) -> Void)?
     /// While set, the next key combination (with ⌘⌥⌃⇧) is handed here — for shortcut actions.
     @Published var shortcutRecorder: ((Shortcut) -> Void)?
+    /// Extra mouse buttons held right now (Mouse tab highlight) and the "Find a Button" recorder.
+    @Published private(set) var mouseDown: Set<Int> = []
+    @Published var mouseRecorder: ((Int) -> Void)?
     private var monitor: Any?
 
     func install(iso: @escaping () -> Bool) {
         guard monitor == nil else { return }
-        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged, .systemDefined]) { [weak self] e in
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged, .systemDefined,
+                                                              .otherMouseDown, .otherMouseUp]) { [weak self] e in
             guard let self else { return e }
+            if e.type == .otherMouseDown || e.type == .otherMouseUp {
+                let b = e.buttonNumber
+                if e.type == .otherMouseDown {
+                    self.mouseDown.insert(b)
+                    if let rec = self.mouseRecorder { rec(b); self.mouseRecorder = nil; return nil }
+                } else {
+                    self.mouseDown.remove(b)
+                }
+                return e
+            }
             // leave text fields, sheets and alerts alone
             if e.window?.sheetParent != nil || e.window is NSPanel { return e }
             if e.type == .keyDown, let rec = self.shortcutRecorder {

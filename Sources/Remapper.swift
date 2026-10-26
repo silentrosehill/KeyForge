@@ -17,6 +17,10 @@ struct Profile: Codable, Identifiable, Equatable {
     var apps: [String] = []
     /// Which keyboard this profile is for (KeyboardDevice.key, or "all").
     var device: String = KeyboardDevice.allKey
+    /// mouse button number (2 = middle, 3 = back, 4 = forward, …) → what it does (any mouse)
+    var mouse: [Int: MouseAction] = [:]
+    /// nil = leave the mouse's lights alone
+    var mouseLighting: MouseLighting?
 }
 
 extension Profile {
@@ -30,6 +34,8 @@ extension Profile {
         actions = (try? c.decodeIfPresent([Usage: KeyAction].self, forKey: .actions)) ?? [:]
         apps = try c.decodeIfPresent([String].self, forKey: .apps) ?? []
         device = try c.decodeIfPresent(String.self, forKey: .device) ?? ""     // "" = from before 1.7, fixed up on load
+        mouse = (try? c.decodeIfPresent([Int: MouseAction].self, forKey: .mouse)) ?? [:]
+        mouseLighting = try? c.decodeIfPresent(MouseLighting.self, forKey: .mouseLighting)
     }
 }
 
@@ -59,10 +65,64 @@ struct KeyboardDevice: Identifiable, Hashable {
     }
 }
 
-/// Per-keyboard drawing settings.
+/// Per-keyboard settings.
 struct DeviceSettings: Codable, Equatable {
     var layout: LayoutKind
     var iso: Bool
+    /// Game Mode: while any game is in front this profile is on…
+    var gameProfile: UUID? = nil
+    /// …and this one everywhere else
+    var desktopProfile: UUID? = nil
+    /// Game Mode switch (nil in files from 1.8.0: on if a game profile was picked)
+    var gameMode: Bool? = nil
+
+    var gameModeOn: Bool { (gameMode ?? (gameProfile != nil)) && gameProfile != nil }
+}
+
+/// ~/Library/Logs/KeyForge.log: what auto-switching saw and did (for troubleshooting).
+enum AutoSwitchLog {
+    static let url = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("Logs/KeyForge.log")
+
+    static func write(_ line: String) {
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        let data = Data("\(stamp) \(line)\n".utf8)
+        if let h = try? FileHandle(forWritingTo: url) {
+            defer { try? h.close() }
+            if (try? h.seekToEnd()) ?? 0 > 2_000_000 { try? h.truncate(atOffset: 0) }   // keep it small
+            try? h.write(contentsOf: data)
+        } else {
+            try? data.write(to: url)
+        }
+    }
+}
+
+/// Recognizes games: Windows games running through CrossOver / Wine (an .exe that isn't a launcher),
+/// Mac apps their developer marked as games, and anything installed by Steam.
+enum GameDetector {
+    /// Launchers, clients and Wine helpers: running, but not games.
+    static let notGames: Set<String> = [
+        "steam.exe", "steamwebhelper.exe", "steamservice.exe", "steamerrorreporter.exe", "gameoverlayui.exe",
+        "epicgameslauncher.exe", "epicwebhelper.exe", "battle.net.exe", "agent.exe", "blizzard error.exe",
+        "riotclientservices.exe", "riotclientux.exe", "riotclientuxrender.exe", "leagueclient.exe", "leagueclientux.exe",
+        "leagueclientuxrender.exe", "upc.exe", "ubisoftconnect.exe", "eadesktop.exe", "origin.exe", "galaxyclient.exe",
+        "explorer.exe", "winecfg.exe", "regedit.exe", "notepad.exe", "cmd.exe", "rundll32.exe", "services.exe",
+        "winedevice.exe", "plugplay.exe", "conhost.exe", "msiexec.exe", "start.exe",
+    ]
+
+    static func isGame(_ app: NSRunningApplication) -> Bool {
+        let name = (app.localizedName ?? app.executableURL?.lastPathComponent ?? "").lowercased()
+        if name.hasSuffix(".exe") {
+            return !notGames.contains(name)
+                && !["launcher", "installer", "setup", "uninstall", "crashreport", "updater"].contains(where: name.contains)
+        }
+        if let id = app.bundleIdentifier, id.hasPrefix("com.codeweavers") || id == "com.valvesoftware.steam" { return false }
+        guard let url = app.bundleURL else { return false }
+        if url.path.lowercased().contains("steamapps") { return true }
+        let info = Bundle(url: url)?.infoDictionary ?? [:]
+        if (info["LSApplicationCategoryType"] as? String)?.contains("games") == true { return true }
+        return info["LSSupportsGameMode"] as? Bool == true
+    }
 }
 
 /// Which keyboards the active profile applies to (only read from pre-1.7 files).
@@ -80,6 +140,7 @@ final class ProfileStore: ObservableObject {
             if oldValue.map(\.map) != profiles.map(\.map) { applyKeys() }
             let before = oldValue.first { $0.id == activeByDevice[lightingKey] }?.lighting
             if before != lightingProfile?.lighting { applyLighting() }
+            if !loading { applyMouseLighting() }
             if !loading { updateTap() }
         }
     }
@@ -272,8 +333,13 @@ final class ProfileStore: ObservableObject {
         for (d, id) in activeByDevice where d != KeyboardDevice.allKey {
             for (k, a) in profile(id)?.actions ?? [:] { merged[k] = a }
         }
+        var mouse: [Int: MouseAction] = profile(activeByDevice[KeyboardDevice.allKey])?.mouse ?? [:]
+        for (d, id) in activeByDevice where d != KeyboardDevice.allKey {
+            for (b, m) in profile(id)?.mouse ?? [:] { mouse[b] = m }
+        }
         KeyTap.shared.iso = iso
         if KeyTap.shared.actions != merged { KeyTap.shared.actions = merged }
+        if KeyTap.shared.mouse != mouse { KeyTap.shared.mouse = mouse }
     }
 
     // MARK: Switching
@@ -287,28 +353,89 @@ final class ProfileStore: ObservableObject {
         setActive(id, for: p.device)
     }
 
-    /// The app in front changed: turn on the profiles made for it (on their keyboards), or go back to the
-    /// user's picks. Returns a profile that just turned on (for the popup), if any.
+    /// Why the last automatic switch happened (for the popup).
+    private(set) var lastSwitchReason = ""
+
+    /// The app in front right now (for Game Mode's status line).
+    @Published private(set) var frontApp: (name: String, isGame: Bool)?
+
+    /// The app in front changed. In order: a profile that lists this app wins; else, on keyboards with Game Mode,
+    /// the Game or the Desktop profile; else keyboards that were switched for an app go back to the user's pick.
+    /// Returns a profile that just turned on (for the popup).
     @discardableResult
-    func frontAppChanged(_ bundleID: String?) -> Profile? {
-        guard let bundleID, bundleID != Bundle.main.bundleIdentifier else { return nil }   // opening KeyForge changes nothing
-        var shown: Profile?
-        let hits = profiles.filter { $0.apps.contains(bundleID) }
-        for p in hits where activeByDevice[p.device] != p.id {
-            if !autoDevices.contains(p.device) { manualByDevice[p.device] = activeByDevice[p.device] }
-            autoDevices.insert(p.device)
-            activeByDevice[p.device] = p.id
-            shown = p
-        }
-        for d in autoDevices where !hits.contains(where: { $0.device == d }) {
-            autoDevices.remove(d)
-            if let back = manualByDevice[d], profile(back) != nil {
-                activeByDevice[d] = back
-                shown = shown ?? profile(back)
+    func frontAppChanged(_ app: NSRunningApplication?) -> Profile? {
+        // opening KeyForge changes nothing (compare processes: Windows games have no bundle ID at all)
+        guard let app, app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return nil }
+        let key = AppWatcher.key(for: app)
+        let game = GameDetector.isGame(app)
+        let name = app.localizedName ?? key
+        frontApp = (name, game)
+
+        var targets: [String: (id: UUID, reason: String)] = [:]
+        for p in profiles where p.apps.contains(key) { targets[p.device] = (p.id, "For \(name)") }
+        for (d, st) in settings where targets[d] == nil && st.gameModeOn {
+            if game, let g = st.gameProfile, profile(g)?.device == d {
+                targets[d] = (g, "🎮 Game: \(name)")
+            } else if !game, let desk = st.desktopProfile, profile(desk)?.device == d {
+                targets[d] = (desk, "🖥 Desktop: \(name)")
             }
         }
+        var shown: Profile?
+        for (d, t) in targets where activeByDevice[d] != t.id {
+            if !autoDevices.contains(d) { manualByDevice[d] = activeByDevice[d] }
+            autoDevices.insert(d)
+            activeByDevice[d] = t.id
+            shown = profile(t.id); lastSwitchReason = t.reason
+        }
+        for d in autoDevices where targets[d] == nil {
+            autoDevices.remove(d)
+            if let back = manualByDevice[d], profile(back) != nil, activeByDevice[d] != back {
+                activeByDevice[d] = back
+                if shown == nil { shown = profile(back); lastSwitchReason = "Back to your profile" }
+            }
+        }
+        AutoSwitchLog.write("front: \(name) [\(key)] game=\(game) → " + (shown.map { "\($0.name) (\(lastSwitchReason))" } ?? "no change"))
         if shown != nil { save(); apply(); updateTap() }
         return shown
+    }
+
+    /// Game Mode of the keyboard on screen.
+    var gameModeOn: Bool { settings[device]?.gameModeOn ?? false }
+
+    func setGameMode(_ on: Bool) {
+        var st = settings[device] ?? DeviceSettings(layout: layout, iso: iso)
+        if on {
+            // first time: pick (or make) a game profile, and use what's on now for the desktop
+            if st.gameProfile.flatMap(profile) == nil {
+                let current = activeByDevice[device]
+                let named = visible.first { $0.id != current && ["gam", "jeu", "play"].contains(where: $0.name.lowercased().contains) }
+                    ?? visible.first { $0.id != current }
+                if let named { st.gameProfile = named.id } else {
+                    var p = Profile(name: "Gaming"); p.device = device
+                    profiles.append(p)
+                    st.gameProfile = p.id
+                }
+            }
+            if st.desktopProfile.flatMap(profile) == nil { st.desktopProfile = activeByDevice[device] }
+        }
+        st.gameMode = on
+        settings[device] = st
+        if on { frontAppChanged(AppWatcher.frontmostOther) }
+    }
+
+    /// Game ↔ Desktop profiles of the keyboard on screen.
+    var gameProfile: UUID? {
+        get { settings[device]?.gameProfile }
+        set { var st = settings[device] ?? DeviceSettings(layout: layout, iso: iso); st.gameProfile = newValue; settings[device] = st }
+    }
+    var desktopProfile: UUID? {
+        get { settings[device]?.desktopProfile }
+        set { var st = settings[device] ?? DeviceSettings(layout: layout, iso: iso); st.desktopProfile = newValue; settings[device] = st }
+    }
+
+    func setMouse(_ button: Int, _ action: MouseAction?) {
+        guard let i = activeIndex else { return }
+        profiles[i].mouse[button] = action
     }
 
     func addApp(_ bundleID: String, to id: UUID) {
@@ -348,7 +475,7 @@ final class ProfileStore: ObservableObject {
     func addProfile(name: String = "New Profile", copying: Profile? = nil) -> Profile {
         var p = Profile(name: uniqueName(copying.map { "\($0.name) Copy" } ?? name))
         p.device = device
-        if let copying { p.map = copying.map; p.lighting = copying.lighting; p.actions = copying.actions }
+        if let copying { p.map = copying.map; p.lighting = copying.lighting; p.actions = copying.actions; p.mouse = copying.mouse; p.mouseLighting = copying.mouseLighting }
         profiles.append(p)
         select(p.id)
         return p
@@ -417,8 +544,25 @@ final class ProfileStore: ObservableObject {
         applyLighting()
     }
 
+    /// The mouse follows the Razer keyboard's active profile, else "All keyboards", else any active profile.
+    var mouseLightingProfile: Profile? {
+        let order = [lightingKey, KeyboardDevice.allKey] + activeByDevice.keys.sorted()
+        return order.lazy.compactMap { self.profile(self.activeByDevice[$0]) }.first { $0.mouseLighting != nil }
+    }
+
+    func applyMouseLighting() {
+        guard !loading else { return }
+        MouseLightController.shared.apply(mouseLightingProfile?.mouseLighting, keyboard: lightingProfile?.lighting ?? .standard)
+    }
+
+    func setMouseLighting(_ m: MouseLighting?) {
+        guard let i = activeIndex else { return }
+        profiles[i].mouseLighting = m
+    }
+
     func applyLighting() {
         guard !loading else { return }
+        applyMouseLighting()
         let iso = settings[lightingKey]?.iso ?? Keys.systemIsISO
         LightingEngine.shared.update(lightingProfile?.lighting ?? .standard, product: devices.productID, iso: iso)
     }
