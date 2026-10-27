@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.10.2 (build 25)
+- Restore the correctly fitted app icon, removing the extra white plate added by macOS
+- Validate icon geometry and the packaged 1024px icon before building, preventing the original unfitted image from being shipped again
+
 ## 1.10.1 (build 24)
 - Refreshed macOS design with native Liquid Glass controls, a simpler sidebar, neutral keycaps and a new app icon
 - Appearance now supports System, Light and Dark modes, accent colors and adjustable glass opacity

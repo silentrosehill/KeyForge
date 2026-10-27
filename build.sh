@@ -3,6 +3,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+swift Icon/verify_icon.swift
+
 APP="KeyForge.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -25,8 +27,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundleExecutable</key><string>KeyForge</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>1.10.1</string>
-  <key>CFBundleVersion</key><string>24</string>
+  <key>CFBundleShortVersionString</key><string>1.10.2</string>
+  <key>CFBundleVersion</key><string>25</string>
   <key>NSHumanReadableCopyright</key><string>Key remapping and profiles for the Razer Huntsman V2 — built with Claude.</string>
   <key>LSMinimumSystemVersion</key><string>15.0</string>
   <key>NSHighResolutionCapable</key><true/>
