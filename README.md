@@ -7,12 +7,17 @@ I VIBECODED IT WIT CLAUDE ORIGINALLY FOR PERSONAL USE BUT IDK MAYBE SOMEONE NEED
 ![Keys](Screenshots/keys.png)
 ![Lighting](Screenshots/lighting.png)
 ![Mouse](Screenshots/mouse.png)
+![Key binding](Screenshots/key-binding.png)
+
+## Appearance
+
+A clean macOS workspace with native controls, a compact sidebar and neutral keycaps. Appearance supports System, Light and Dark modes, accent colors, and a persistent Glass opacity slider. Floating controls use native Liquid Glass on macOS 26 and later, with a frosted fallback on earlier supported versions. Reduce Transparency is respected, and opacity adjustments keep text fully readable.
 
 ## Features
 
 **Keys**
 - Your keyboard drawn on screen with your real layout's legends (AZERTY, QWERTZ, …); keys light up as you press them
-- Click a key and choose what it does, or just press the key you want it to be
+- Click a key to edit it. Double-click a key, then press its replacement in the centered popup
 - Media keys, volume, brightness, Mission Control, Launchpad, Spotlight, Fn, or disable a key
 - Make a key send a shortcut, type text, open an app, or run a macro (shortcuts, text and pauses in a row)
 - Quick setups: Mac modifiers, Caps Lock → Esc, media on F7–F12, disable the Win keys for gaming
@@ -41,7 +46,7 @@ I VIBECODED IT WIT CLAUDE ORIGINALLY FOR PERSONAL USE BUT IDK MAYBE SOMEONE NEED
 - Talks to the keyboard directly over USB (the same protocol as OpenRazer); no Synapse needed
 
 **App**
-- Liquid Glass look like MP3 Tagger, theme colors, or colors that follow your keyboard's RGB
+- Native Liquid Glass controls, adjustable glass opacity, System/Light/Dark appearance, and accent colors that can follow your keyboard's RGB
 - Lives in the menu bar, opens at login, re-applies everything when the keyboard is plugged back in
 
 ## Notes

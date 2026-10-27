@@ -244,7 +244,7 @@ struct MouseLightingCard: View {
 
                     switch ml.effect {
                     case .sync:
-                        Label("Copies your keyboard: its color and effect, and it follows profile and Game Mode switches. Per Key boards light the 3 zones with the keys under your hand.",
+                        Label("Matches keyboard lighting.",
                               systemImage: "link")
                             .font(.callout).foregroundStyle(.secondary)
                     case .solid, .breathing:
@@ -264,7 +264,7 @@ struct MouseLightingCard: View {
                             Spacer()
                         }
                         colorRow(ml.zones[zone.index]) { c in var n = ml; n.zones[zone.index] = c; store.setMouseLighting(n) }
-                        Text("Per Zone is for the G203 (3 zones); single-light mice use the left color.").font(.caption).foregroundStyle(.secondary)
+                        Text("G203: 3 zones. Other mice use the left color.").font(.caption).foregroundStyle(.secondary)
                     case .cycle, .wave:
                         sliderRow("Speed", "tortoise", "hare", value: ml.speed) { v in var n = ml; n.speed = v; store.setMouseLighting(n) }
                     case .off:

@@ -9,8 +9,10 @@ struct KeyForgeApp: App {
     var body: some Scene {
         Window("KeyForge \(appVersion)", id: "main") {
             ContentView()
-                .frame(minWidth: 1180, minHeight: 640)
+                .frame(minWidth: 1180, minHeight: 720)
         }
+        .defaultSize(width: 1280, height: 800)
+        .windowToolbarStyle(.unified)
         .restorationBehavior(.disabled)   // always open the window when the app is launched
         MenuBarExtra {
             MenuBarContent(store: store)
@@ -74,6 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @MainActor
 final class UIState: ObservableObject {
     @Published var selected: Usage?
+    @Published var bindingKey: Usage?
     @Published var renaming: UUID?
     @Published var renameText = ""
     @Published var deleting: UUID?
@@ -81,6 +84,13 @@ final class UIState: ObservableObject {
     @Published var showSettings = false
     @Published var mode: Mode = .keys
     enum Mode { case keys, mouse, lighting }
+
+    func chooseBinding(for key: Usage) {
+        LiveKeys.shared.recorder = nil
+        LiveKeys.shared.shortcutRecorder = nil
+        selected = key
+        bindingKey = key
+    }
 }
 
 struct ContentView: View {
@@ -91,10 +101,27 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView {
             SidebarView(store: store, devices: store.devices, ui: ui)
-                .navigationSplitViewColumnWidth(min: 240, ideal: 260)
+                .navigationSplitViewColumnWidth(min: 242, ideal: 254, max: 300)
         } detail: {
             DetailView(store: store, ui: ui)
         }
+        .disabled(ui.bindingKey != nil)
+        .background(ForgeBackdrop())
+        .overlay {
+            if let key = ui.bindingKey {
+                GeometryReader { geometry in
+                    ZStack {
+                        Color.black.opacity(0.55).ignoresSafeArea()
+                            .onTapGesture { ui.bindingKey = nil }
+                        KeyBindingPicker(store: store, key: key) { ui.bindingKey = nil }
+                            .frame(width: min(320, geometry.size.width - 40), height: min(176, geometry.size.height - 40))
+                    }
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                }
+                .transition(.opacity)
+            }
+        }
+        .preferredColorScheme(themeStore.colorScheme)
         .toolbar {
             if #available(macOS 26.0, *) {
                 ToolbarItem(placement: .navigation) { AppTitle() }
@@ -105,12 +132,15 @@ struct ContentView: View {
             ToolbarItemGroup {
                 Button { ui.showSettings.toggle() } label: { Label("Settings", systemImage: "gearshape") }
                     .help("Keyboard layout and startup")
+                    .disabled(ui.bindingKey != nil)
                     .popover(isPresented: $ui.showSettings, arrowEdge: .bottom) {
                         SettingsPanel(store: store).environment(\.appTheme, themeStore.rendered)
-                            .environment(\.glassTint, themeStore.glassTint).tint(themeStore.rendered.accent)
+                            .environment(\.glassTint, themeStore.glassTint)
+                            .environment(\.glassOpacity, themeStore.glassOpacity).tint(themeStore.rendered.accent)
                     }
-                Button { ui.showTheme.toggle() } label: { Label("Theme", systemImage: "paintpalette.fill") }
+                Button { ui.showTheme.toggle() } label: { Label("Appearance", systemImage: "paintpalette") }
                     .help("Change the app's color")
+                    .disabled(ui.bindingKey != nil)
                     .popover(isPresented: $ui.showTheme, arrowEdge: .bottom) { ThemePicker(store: themeStore) }
             }
         }
@@ -135,10 +165,15 @@ struct ContentView: View {
             // screenshot helper: KEYFORGE_SELECT=<hex usage> opens the editor for that key
             if let h = ProcessInfo.processInfo.environment["KEYFORGE_SELECT"], let u = UInt64(h, radix: 16) { ui.selected = u }
         }
-        .onChange(of: store.activeID) { ui.selected = nil; LiveKeys.shared.recorder = nil }
-        .onChange(of: store.device) { if !store.selectedHasLighting && ui.mode == .lighting { ui.mode = .keys } }
+        .onChange(of: store.activeID) { ui.selected = nil; ui.bindingKey = nil; LiveKeys.shared.recorder = nil }
+        .onChange(of: store.device) {
+            ui.bindingKey = nil
+            if !store.selectedHasLighting && ui.mode == .lighting { ui.mode = .keys }
+        }
+        .onChange(of: ui.mode) { ui.bindingKey = nil }
         .environment(\.appTheme, themeStore.rendered)
         .environment(\.glassTint, themeStore.glassTint)
+        .environment(\.glassOpacity, themeStore.glassOpacity)
         .tint(themeStore.rendered.accent)
         .animation(.easeInOut(duration: 0.35), value: themeStore.rendered)
     }
@@ -150,7 +185,6 @@ struct AppTitle: View {
             .resizable()
             .interpolation(.high)
             .frame(width: 22, height: 22)
-            .padding(.trailing, -10)
             .accessibilityHidden(true)
     }
 }
@@ -184,24 +218,33 @@ struct SidebarView: View {
     var body: some View {
         VStack(spacing: 0) {
             KeyboardPicker(store: store, devices: devices)
-                .padding(.horizontal, 12)
-                .padding(.top, 10)
+                .padding(.horizontal, 14).padding(.top, 12)
+
+            VStack(alignment: .leading, spacing: 3) {
+                workspace(.keys, "Keyboard", icon: "keyboard")
+                workspace(.mouse, "Mouse", icon: "computermouse")
+                if store.selectedHasLighting {
+                    workspace(.lighting, "Lighting", icon: "light.max")
+                }
+            }
+            .padding(.horizontal, 14).padding(.top, 16).padding(.bottom, 22)
 
             HStack {
-                Text("Profiles").font(.headline)
+                Text("Profiles").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
                 Spacer()
                 Button { store.addProfile() } label: { Image(systemName: "plus") }
-                    .buttonStyle(.purpleGlassIcon(28))
-                    .help("New profile")
+                    .buttonStyle(.purpleGlassIcon(26)).help("New profile")
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 10)
-            .padding(.bottom, 6)
+            .padding(.horizontal, 25).padding(.bottom, 7)
 
-            List(selection: Binding(get: { store.activeID }, set: { if let id = $0 { store.select(id) } })) {
+            List {
                 ForEach(store.visible) { p in
-                    ProfileRow(profile: p, active: p.id == store.activeID, enabled: store.enabled)
-                        .tag(p.id)
+                    Button { store.select(p.id) } label: {
+                        ProfileRow(profile: p, active: p.id == store.activeID, enabled: store.enabled)
+                    }
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(p.id == store.activeID ? [.isSelected] : [])
+                        .listRowBackground(Color.clear)
                         .contextMenu {
                             Button("Rename…") { ui.renameText = p.name; ui.renaming = p.id }
                             Button("Duplicate") { store.addProfile(copying: p) }
@@ -211,16 +254,38 @@ struct SidebarView: View {
                 }
                 .onMove { store.moveVisible(from: $0, to: $1) }
             }
+            .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
+            .frame(minHeight: 100)
 
-            DeviceCard(store: store, devices: devices)
-                .padding(12)
+            DeviceCard(store: store, devices: devices).padding(14)
+
         }
-        .background {
-            theme.sidebarTint   // macOS draws the sidebar's Liquid Glass; this just tints it
-                .ignoresSafeArea()
-        }
+        .background(theme.accent.opacity(0.025 * theme.tintStrength).ignoresSafeArea())
     }
+
+    private func workspace(_ mode: UIState.Mode, _ title: String, icon: String) -> some View {
+        let selected = ui.mode == mode
+        return Button {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                ui.mode = mode; ui.selected = nil; LiveKeys.shared.recorder = nil
+            }
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: icon).font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(selected ? theme.accent : Color.secondary).frame(width: 20)
+                Text(title).font(.system(size: 13, weight: selected ? .semibold : .regular))
+                Spacer()
+            }
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(selected ? theme.accent.opacity(0.12) : .clear))
+            .contentShape(RoundedRectangle(cornerRadius: 9))
+        }
+        .buttonStyle(.plain).accessibilityLabel(title)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+    }
+
 }
 
 struct ProfileRow: View {
@@ -231,14 +296,10 @@ struct ProfileRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(active ? AnyShapeStyle(theme.purple) : AnyShapeStyle(Color.primary.opacity(0.08)))
-                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(.white.opacity(active ? 0.22 : 0), lineWidth: 0.5))
-                Image(systemName: "keyboard").font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(active ? .white : .secondary)
-            }
-            .frame(width: 34, height: 34)
+            Image(systemName: "keyboard")
+                .font(.system(size: 14, weight: .regular))
+                .foregroundStyle(active ? theme.accent : Color.secondary)
+                .frame(width: 24, height: 28)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(profile.name).font(.body.weight(active ? .semibold : .regular)).lineLimit(1)
@@ -248,14 +309,19 @@ struct ProfileRow: View {
             }
             Spacer()
             if active {
-                Text(enabled ? "ON" : "OFF")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 7).padding(.vertical, 2)
-                    .background(Capsule().fill(enabled ? theme.purple : Color.gray))
+                Circle().fill(enabled ? theme.accent : Color.gray)
+                    .frame(width: 6, height: 6)
+                    .help(enabled ? "Active profile" : "Remapping paused")
             }
         }
-        .padding(.vertical, 3)
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .background {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(active ? theme.accent.opacity(0.1) : Color.clear)
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(Color.clear, lineWidth: 0.5))
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 12))
     }
 }
 
@@ -358,11 +424,7 @@ struct DeviceCard: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background {
-            let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
-            shape.fill(Color.primary.opacity(0.05))
-                .overlay(shape.strokeBorder(Color.primary.opacity(0.09), lineWidth: 0.5))
-        }
+        .background(ForgePanel(cornerRadius: 16))
     }
 }
 
@@ -375,68 +437,78 @@ struct DetailView: View {
     @Environment(\.appTheme) private var theme
 
     var body: some View {
+        ScrollViewReader { position in
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 20) {
                 header
-                if ui.mode != .lighting { GameModeCard(store: store) }
                 if ui.mode == .mouse {
                     MouseTab(store: store)
                 } else {
-                KeyboardView(store: store, selected: $ui.selected,
-                             lighting: ui.mode == .lighting && store.selectedHasLighting ? (store.active?.lighting ?? .standard) : nil)
-                    .frame(maxWidth: 1240)
-                    .frame(maxWidth: .infinity)
+                    keyboardStage
+                    if ui.mode == .lighting {
+                        LightingCard(store: store)
+                    } else if let sel = ui.selected {
+                        KeyEditor(store: store, key: sel, ui: ui).id(sel)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                    if ui.mode == .keys { ChangesList(store: store, ui: ui) }
                 }
-                if ui.mode == .mouse {
-                    EmptyView()
-                } else if ui.mode == .lighting {
-                    LightingCard(store: store)
-                } else if let sel = ui.selected {
-                    KeyEditor(store: store, key: sel, ui: ui).id(sel)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                } else {
-                    hint
-                }
-                if ui.mode == .keys { ChangesList(store: store, ui: ui) }
+                if ui.mode != .lighting { GameModeCard(store: store) }
             }
-            .padding(24)
+            .frame(maxWidth: 1450, alignment: .leading)
+            .padding(.horizontal, 24).padding(.top, 20).padding(.bottom, 24)
+            .id("workspace-top")
+            .frame(maxWidth: .infinity)
             .animation(.easeInOut(duration: 0.25), value: ui.mode)
         }
-        // The keyboard's height follows the width. A scroll bar that takes space (macOS does that when a
-        // mouse is plugged in) made the page narrower → shorter → no scroll bar → wider → taller… forever,
-        // pegging the CPU (seen when Per Key's extra row made the page just taller than the window).
+        // Overlay scrollbars avoid the keyboard aspect-ratio layout feedback loop.
         .scrollIndicators(.never)
-        .background(
-            LinearGradient(colors: [theme.purple.opacity(0.10), .clear, theme.indigo.opacity(0.08)],
-                           startPoint: .topLeading, endPoint: .bottomTrailing)
-            .ignoresSafeArea()
-        )
+        .onChange(of: ui.mode) { position.scrollTo("workspace-top", anchor: .top) }
         .contentShape(Rectangle())
         .onTapGesture { withAnimation { ui.selected = nil } }
         .onAppear {
             if ProcessInfo.processInfo.environment["KEYFORGE_LIGHTING"] != nil { ui.mode = .lighting }
-            if ProcessInfo.processInfo.environment["KEYFORGE_MOUSE"] != nil { ui.mode = .mouse }   // screenshot helper
+            if ProcessInfo.processInfo.environment["KEYFORGE_MOUSE"] != nil { ui.mode = .mouse }
+        }
         }
     }
 
     private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(store.active?.name ?? "").font(.system(size: 26, weight: .bold))
-                Text(store.enabled ? "On \(store.device == KeyboardDevice.allKey ? "every keyboard" : store.name(of: store.device))" : "Remapping is off")
-                    .font(.callout).foregroundStyle(.secondary)
-                AutoSwitchRow(store: store)
-                    .padding(.top, 2)
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .center, spacing: 16) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(store.active?.name ?? "Profile")
+                        .font(.system(size: 24, weight: .semibold))
+                        .lineLimit(1).minimumScaleFactor(0.7)
+                }
+                Spacer(minLength: 12)
+                if ui.mode == .keys { keyButtons }
             }
-            Spacer()
-            // KeyForge can only light the Razer Huntsman V2
-            GlassSegmented(selection: Binding(get: { ui.mode }, set: { ui.mode = $0; ui.selected = nil; LiveKeys.shared.recorder = nil }),
-                           options: store.selectedHasLighting ? [(.keys, "Keys"), (.mouse, "Mouse"), (.lighting, "Lighting")]
-                                                              : [(.keys, "Keys"), (.mouse, "Mouse")])
-                .frame(width: store.selectedHasLighting ? 300 : 210)
-            Spacer()
-            if ui.mode == .keys { keyButtons } else { Color.clear.frame(width: 250, height: 1) }
+            AutoSwitchRow(store: store)
         }
+    }
+
+    private var keyboardStage: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 8) {
+                Image(systemName: ui.mode == .lighting ? "light.max" : "keyboard")
+                    .foregroundStyle(Color.secondary)
+                Text(ui.mode == .lighting ? "Preview" : "Keyboard")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer()
+                if ui.mode == .keys {
+                    HStack(spacing: 12) {
+                        Label("Remapped", systemImage: "circle.fill").foregroundStyle(theme.accent.opacity(0.65))
+                        Label("Selected", systemImage: "circle.fill").foregroundStyle(theme.accent)
+                    }.font(.system(size: 9, weight: .medium))
+                }
+            }
+            KeyboardView(store: store, selected: $ui.selected,
+                         lighting: ui.mode == .lighting && store.selectedHasLighting ? (store.active?.lighting ?? .standard) : nil,
+                         onDoubleClick: { ui.chooseBinding(for: $0) })
+                .frame(maxWidth: 1240).frame(maxWidth: .infinity)
+        }
+        .padding(.top, 4)
     }
 
     @ViewBuilder private var keyButtons: some View {
@@ -452,24 +524,12 @@ struct DetailView: View {
 
             Button("Reset All") { withAnimation { store.resetActive(); ui.selected = nil } }
                 .buttonStyle(.purpleGlass)
-                .disabled(store.active?.map.isEmpty ?? true)
+                .disabled((store.active?.map.isEmpty ?? true) && (store.active?.actions.isEmpty ?? true))
         }
         .frame(width: 250, alignment: .trailing)
     }
 
-    private var hint: some View {
-        GlassCard {
-            HStack(spacing: 14) {
-                Image(systemName: "hand.tap.fill").font(.title2).foregroundStyle(theme.swatch)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Click a key to change what it does").font(.headline)
-                    Text("Press keys on your keyboard to see them light up. Changed keys glow and show their new job.")
-                        .font(.callout).foregroundStyle(.secondary)
-                }
-                Spacer()
-            }
-        }
-    }
+
 }
 
 /// The card under the keyboard for the selected key.
@@ -510,23 +570,10 @@ struct KeyEditor: View {
                     Spacer()
 
                     if action == nil {
-                        Menu {
-                            ForEach(Keys.targetGroups(iso: store.iso)) { g in
-                                Menu {
-                                    ForEach(g.usages, id: \.self) { u in
-                                        Button { store.set(key, to: u) } label: {
-                                            if u == target { Label(Keys.name(u, iso: store.iso), systemImage: "checkmark") }
-                                            else { Text(Keys.name(u, iso: store.iso)) }
-                                        }
-                                    }
-                                } label: { Label(g.title, systemImage: g.icon) }
-                            }
-                            Divider()
-                            Button { store.set(key, to: HID.none) } label: { Label("Disable this key", systemImage: "nosign") }
-                        } label: {
-                            Label("Choose", systemImage: "list.bullet")
+                        Button { ui.chooseBinding(for: key) } label: {
+                            Label("Choose key", systemImage: "keyboard")
                         }
-                        .modifier(GlassMenuLabel())
+                        .buttonStyle(.purpleGlass)
 
                         Button {
                             if recording { live.recorder = nil }
@@ -549,7 +596,11 @@ struct KeyEditor: View {
                 }
             }
         }
-        .onDisappear { live.recorder = nil; live.shortcutRecorder = nil }
+        .onDisappear {
+            // A key popup may already own recording while this editor is replaced.
+            guard ui.bindingKey == nil else { return }
+            live.recorder = nil; live.shortcutRecorder = nil
+        }
         .onTapGesture { }   // don't deselect when clicking the card
     }
 }
@@ -560,52 +611,43 @@ struct ActionCap: View {
     @Environment(\.appTheme) private var theme
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
-        VStack(spacing: 3) {
-            Image(systemName: action.icon).font(.system(size: 20, weight: .bold))
-            Text(action.label(iso: ProfileStore.shared.iso)).font(.system(size: 9, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.6)
+        VStack(spacing: 4) {
+            Image(systemName: action.icon).font(.system(size: 20, weight: .medium))
+            Text(action.label(iso: ProfileStore.shared.iso)).font(.system(size: 9, weight: .medium))
+                .lineLimit(1).minimumScaleFactor(0.6)
         }
-        .foregroundStyle(.white)
-        .padding(6)
-        .frame(width: 64, height: 64)
-        .background {
-            ZStack {
-                shape.fill(Color(white: 0.04)).offset(y: 2)
-                shape.fill(LinearGradient(colors: [theme.purple, theme.indigo], startPoint: .top, endPoint: .bottom))
-            }
-        }
-        .overlay(shape.strokeBorder(.white.opacity(0.22), lineWidth: 0.5))
-        .shadow(color: .black.opacity(0.3), radius: 6, y: 3)
+        .foregroundStyle(theme.accent).padding(6).frame(width: 64, height: 64)
+        .background(RoundedRectangle(cornerRadius: 12).fill(theme.accent.opacity(0.12)))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.accent.opacity(0.25), lineWidth: 0.5))
     }
 }
 
-/// A large single keycap used in the editor card.
 struct BigCap: View {
     let usage: Usage
     let iso: Bool
     let highlighted: Bool
     @Environment(\.appTheme) private var theme
+    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        let l = Keys.legend(usage, iso: iso)
+        let legend = Keys.legend(usage, iso: iso)
         let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
         VStack(spacing: 1) {
-            if let top = l.top { Text(top).font(.system(size: 13, weight: .medium)).foregroundStyle(.white.opacity(0.6)) }
-            Text(l.main).font(.system(size: l.main.count <= 2 ? 24 : 14, weight: .bold)).foregroundStyle(.white)
+            if let top = legend.top {
+                Text(top).font(.system(size: 13, weight: .medium)).foregroundStyle(.secondary)
+            }
+            Text(legend.main).font(.system(size: legend.main.count <= 2 ? 24 : 14, weight: .semibold))
                 .lineLimit(1).minimumScaleFactor(0.5)
         }
-        .padding(6)
-        .frame(width: 64, height: 64)
+        .foregroundStyle(Color.primary).padding(6).frame(width: 64, height: 64)
         .background {
-            ZStack {
-                shape.fill(Color(white: 0.04)).offset(y: 2)
-                shape.fill(LinearGradient(colors: highlighted ? [theme.purple, theme.indigo] : [Color(white: 0.22), Color(white: 0.12)],
-                                          startPoint: .top, endPoint: .bottom))
-                shape.fill(LinearGradient(colors: [.white.opacity(0.14), .clear], startPoint: .top, endPoint: .center))
-            }
+            shape.fill(LinearGradient(colors: scheme == .dark ? [Color(white: 0.25), Color(white: 0.16)]
+                                                                  : [Color(white: 0.99), Color(white: 0.9)],
+                                      startPoint: .top, endPoint: .bottom))
+            if highlighted { shape.fill(theme.accent.opacity(0.15)) }
         }
-        .overlay(shape.strokeBorder(highlighted ? AnyShapeStyle(Theme.rim) : AnyShapeStyle(Color.white.opacity(0.1)), lineWidth: 1))
-        .shadow(color: .black.opacity(0.3), radius: 6, y: 3)
+        .overlay(shape.strokeBorder(highlighted ? theme.accent.opacity(0.65) : Color.primary.opacity(0.14), lineWidth: highlighted ? 1 : 0.5))
+        .shadow(color: .black.opacity(0.12), radius: 3, y: 2)
     }
 }
 
@@ -621,7 +663,7 @@ struct ChangesList: View {
         let changes = (keyChanges + actionChanges).sorted { Keys.name($0.key, iso: store.iso) < Keys.name($1.key, iso: store.iso) }
         if !changes.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Changes in this profile").font(.headline)
+                Text("Your mappings").font(.system(size: 13, weight: .semibold))
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 250), spacing: 10)], alignment: .leading, spacing: 10) {
                     ForEach(changes, id: \.key) { c in
                         HStack(spacing: 8) {
@@ -660,15 +702,16 @@ struct SettingsPanel: View {
             Text("Settings").font(.headline)
             VStack(alignment: .leading, spacing: 6) {
                 Text("Layout of \(store.name(of: store.device))").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-                GlassSegmented(selection: Binding(get: { store.layout }, set: { store.layout = $0 }),
-                               options: LayoutKind.allCases.map { ($0, $0.title) })
+                Picker("Keyboard size", selection: Binding(get: { store.layout }, set: { store.layout = $0 })) {
+                    ForEach(LayoutKind.allCases, id: \.self) { layout in Text(layout.title).tag(layout) }
+                }
+                .pickerStyle(.menu)
                 GlassSegmented(selection: Binding(get: { store.iso }, set: { store.iso = $0 }),
                                options: [(true, "ISO (big Enter)"), (false, "ANSI (US)")])
             }
             Toggle(isOn: Binding(get: { store.openAtLogin }, set: { store.openAtLogin = $0 })) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Open at login")
-                    Text("Keeps your keys working after a restart").font(.caption).foregroundStyle(.secondary)
                 }
             }
             .toggleStyle(.switch)
@@ -680,11 +723,9 @@ struct SettingsPanel: View {
             }
             .toggleStyle(.switch)
             AccessRow()
-            Text("KeyForge stays in the menu bar when you close the window, and puts your keys back when the keyboard is replugged.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
         .padding(16)
-        .frame(width: 320)
+        .frame(width: 380)
     }
 }
 
@@ -698,7 +739,7 @@ struct AccessRow: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("Key access")
                 Text(tap.trusted ? "Allowed: shortcuts, macros, Ripple and Heatmap work" : "Needed for shortcuts, macros, Ripple and Heatmap")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
             if !tap.trusted {

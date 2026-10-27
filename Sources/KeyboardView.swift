@@ -86,6 +86,7 @@ struct KeyboardView: View {
     @Binding var selected: Usage?
     /// When set, the keys preview the lighting instead of the key changes.
     var lighting: Lighting? = nil
+    var onDoubleClick: ((Usage) -> Void)? = nil
     @Environment(\.appTheme) private var theme
 
     var body: some View {
@@ -101,7 +102,7 @@ struct KeyboardView: View {
                 if let lighting {
                     // Lighting preview: the keys can't be clicked here, so draw the whole keyboard in one
                     // Canvas instead of 100+ live key views (those re-laid out on every color change and lagged).
-                    LightingKeys(keys: keys, lighting: lighting, iso: store.iso, lit: live.down, unit: unit, pad: pad, pink: theme.pink)
+                    LightingKeys(keys: keys, lighting: lighting, iso: store.iso, lit: live.down, unit: unit, pad: pad, pink: theme.accent)
                         .frame(width: w, height: h)
                         .allowsHitTesting(false)
                     if lighting.effect == .perKey {
@@ -129,20 +130,40 @@ struct KeyboardView: View {
                            enabled: store.enabled)
                         .frame(width: k.w * unit, height: k.h * unit)
                         .offset(x: pad + k.x * unit, y: pad + k.y * unit)
-                        .onTapGesture {
+                        .gesture(TapGesture(count: 2).exclusively(before: TapGesture()).onEnded { gesture in
+                            guard !k.fixed else { return }
+                            if case .first = gesture {
+                                selected = k.usage
+                                onDoubleClick?(k.usage)
+                            } else {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                    selected = selected == k.usage ? nil : k.usage
+                                }
+                            }
+                        })
+                        .help(k.fixed ? "Fn is handled inside the keyboard and can't be changed" : Keys.name(k.usage, iso: store.iso))
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(Keys.name(k.usage, iso: store.iso))
+                        .accessibilityValue(selected == k.usage ? "Selected" : (map[k.usage].map { Keys.name($0, iso: store.iso) } ?? "Default"))
+                        .accessibilityAddTraits(k.fixed ? [] : [.isButton])
+                        .accessibilityAction {
                             guard !k.fixed else { return }
                             withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
                                 selected = selected == k.usage ? nil : k.usage
                             }
                         }
-                        .help(k.fixed ? "Fn is handled inside the keyboard and can't be changed" : Keys.name(k.usage, iso: store.iso))
+                        .accessibilityAction(named: Text("Choose binding")) {
+                            guard !k.fixed else { return }
+                            selected = k.usage
+                            onDoubleClick?(k.usage)
+                        }
                 }
                 }
                 // Razer-style logo strip
                 if store.layout == .huntsman {
                 Text("RAZER")
                     .font(.system(size: max(unit * 0.2, 8), weight: .heavy)).tracking(3)
-                    .foregroundStyle(theme.pink.opacity(0.55))
+                    .foregroundStyle(Color.secondary.opacity(0.7))
                     .offset(x: pad + 18.6 * unit, y: pad + 1.0 * unit - max(unit * 0.2, 8) * 0.2)
                     .allowsHitTesting(false)
                 }
@@ -190,7 +211,7 @@ private struct KeyGeometry {
         switch k.shape {
         case .isoEnter: return ISOEnterShape(unit: unit).path(in: r)
         case .round: return Path(roundedRect: r, cornerRadius: min(r.width, r.height) / 2)
-        case .normal: return Path(roundedRect: r, cornerRadius: max(unit * 0.14, 4), style: .continuous)
+        case .normal: return Path(roundedRect: r, cornerRadius: max(unit * 0.18, 5), style: .continuous)
         }
     }
 }
@@ -252,25 +273,27 @@ private struct KeyTops: View {
     let lit: Set<Usage>
     let geo: KeyGeometry
     let pink: Color
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         let live = lighting.effect.isLive
         let unit = geo.unit
         Canvas { ctx, _ in
-            let skirt = GraphicsContext.Shading.color(Color(white: 0.04))
-            let edge = GraphicsContext.Shading.color(.white.opacity(0.08))
+            let skirt = GraphicsContext.Shading.color(colorScheme == .dark ? Color(white: 0.08) : Color(white: 0.65))
             for k in keys {
                 let r = geo.cap(k)
                 let down = lit.contains(k.usage)
                 let top = r.offsetBy(dx: 0, dy: down ? 1.5 : 0)
                 let path = geo.path(k, top)
                 ctx.fill(geo.path(k, r.offsetBy(dx: 0, dy: down ? 0 : 1.5)), with: skirt)
-                let colors: [Color] = down ? [pink.opacity(0.95), pink.opacity(0.6)] : [Color(white: 0.2), Color(white: 0.12)]
+                let colors: [Color] = down ? [pink.opacity(0.65), pink.opacity(0.45)] : (colorScheme == .dark ? [Color(white: 0.24), Color(white: 0.15)] : [Color(white: 0.96), Color(white: 0.85)])
                 ctx.fill(path, with: .linearGradient(Gradient(colors: colors), startPoint: CGPoint(x: top.midX, y: top.minY),
                                                       endPoint: CGPoint(x: top.midX, y: top.maxY)))
-                ctx.stroke(path, with: edge, lineWidth: 1)
+                ctx.stroke(path, with: .linearGradient(Gradient(colors: [.white.opacity(0.24), .white.opacity(0.035)]),
+                                                        startPoint: CGPoint(x: top.minX, y: top.minY),
+                                                        endPoint: CGPoint(x: top.maxX, y: top.maxY)), lineWidth: 1)
 
-                let led = (live ? nil : ledColor(k, lighting, nil)) ?? .white.opacity(k.fixed ? 0.35 : 0.9)
+                let led = (live ? nil : ledColor(k, lighting, nil)) ?? (colorScheme == .dark ? Color.white : Color.black).opacity(k.fixed ? 0.35 : 0.85)
                 let l = Keys.legend(k.usage, iso: iso)
                 var center = CGPoint(x: top.midX, y: top.midY)
                 if k.shape == .isoEnter { center = CGPoint(x: top.midX + unit * 0.12, y: top.minY + unit * 0.5) }
@@ -325,16 +348,17 @@ enum LEDPreview {
 private struct KeyboardCase: View {
     let theme: AppTheme
     var glow: AnyShapeStyle? = nil
+    @Environment(\.colorScheme) private var colorScheme
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
         shape
-            .fill(LinearGradient(colors: [Color(white: 0.13), Color(white: 0.06)], startPoint: .top, endPoint: .bottom))
-            .overlay(shape.strokeBorder(LinearGradient(colors: [.white.opacity(0.22), .white.opacity(0.03)],
-                                                       startPoint: .top, endPoint: .bottom), lineWidth: 1))
-            .background(
-                shape.fill(glow ?? AnyShapeStyle(Color.clear)).blur(radius: 26).opacity(0.55).padding(6)
-            )
-            .shadow(color: .black.opacity(0.45), radius: 14, y: 8)
+            .fill(LinearGradient(colors: colorScheme == .dark
+                                 ? [Color(white: 0.19), Color(white: 0.11)]
+                                 : [Color(white: 0.88), Color(white: 0.76)],
+                                 startPoint: .topLeading, endPoint: .bottomTrailing))
+            .overlay(shape.strokeBorder(Color.primary.opacity(0.16), lineWidth: 0.5))
+            .background(shape.fill(glow ?? AnyShapeStyle(Color.clear)).blur(radius: 26).opacity(0.35).padding(6))
+            .shadow(color: .black.opacity(colorScheme == .dark ? 0.25 : 0.12), radius: 10, y: 5)
     }
 }
 
@@ -374,12 +398,13 @@ struct KeyCap: View {
     let enabled: Bool
     @StateObject private var hover = HoverState()
     @Environment(\.appTheme) private var theme
+    @Environment(\.colorScheme) private var colorScheme
 
     private var shape: AnyShape {
         switch key.shape {
         case .isoEnter: AnyShape(ISOEnterShape(unit: unit))
         case .round: AnyShape(Capsule())
-        case .normal: AnyShape(RoundedRectangle(cornerRadius: max(unit * 0.14, 4), style: .continuous))
+        case .normal: AnyShape(RoundedRectangle(cornerRadius: max(unit * 0.18, 5), style: .continuous))
         }
     }
 
@@ -405,13 +430,13 @@ struct KeyCap: View {
     /// Darker skirt + lighter top surface.
     private var capBody: some View {
         let remapped = target != nil || action != nil
-        let radius: CGFloat = selected || lit ? 9 : (remapped ? 5 : 0)
+        let radius: CGFloat = selected || lit ? 3 : 0
         return ZStack {
-            shape.fill(Color(white: 0.04)).offset(y: lit ? 0 : 1.5)
+            shape.fill(colorScheme == .dark ? Color(white: 0.08) : Color(white: 0.65)).offset(y: lit ? 0 : 1.5)
             shape
                 .fill(LinearGradient(colors: capColors(remapped), startPoint: .top, endPoint: .bottom))
-                .overlay(shape.fill(LinearGradient(colors: [.white.opacity(0.10), .clear], startPoint: .top, endPoint: .center)))
-                .overlay(shape.stroke(borderColor(remapped), lineWidth: selected ? 2 : 1).padding(selected ? 1 : 0.5))
+                .overlay(shape.fill(LinearGradient(colors: [.white.opacity(0.13), .clear], startPoint: .topLeading, endPoint: .center)))
+                .overlay(shape.stroke(borderColor(remapped), lineWidth: selected ? 1.5 : 0.5).padding(selected ? 1 : 0.5))
                 .shadow(color: glowColor(remapped), radius: radius)
                 .offset(y: lit ? 1.5 : 0)
         }
@@ -423,36 +448,36 @@ struct KeyCap: View {
             VStack(spacing: 2) {
                 Text(legend.main)
                     .font(.system(size: max(unit * 0.17, 7), weight: .medium))
-                    .strikethrough(true, color: Color.white.opacity(0.35))
-                    .foregroundStyle(Color.white.opacity(0.45))
+                    .strikethrough(true, color: Color.primary.opacity(0.35))
+                    .foregroundStyle(Color.secondary.opacity(0.8))
                 Image(systemName: action.icon)
                     .font(.system(size: max(unit * 0.26, 9), weight: .bold))
-                    .foregroundStyle(Color.white)
+                    .foregroundStyle(Color.primary)
             }
         } else if let target, key.shape != .round {
             let t = Keys.legend(target, iso: iso).main
             VStack(spacing: 1) {
                 Text(legend.main)
                     .font(.system(size: max(unit * 0.17, 7), weight: .medium))
-                    .strikethrough(true, color: Color.white.opacity(0.35))
-                    .foregroundStyle(Color.white.opacity(0.45))
+                    .strikethrough(true, color: Color.primary.opacity(0.35))
+                    .foregroundStyle(Color.secondary.opacity(0.8))
                 Text(t)
                     .font(.system(size: fontSize(t), weight: .bold))
-                    .foregroundStyle(Color.white)
-                    .shadow(color: theme.pink.opacity(0.8), radius: 4)
+                    .foregroundStyle(Color.primary)
+
             }
         } else {
             let main = target.map { Keys.legend($0, iso: iso).main } ?? legend.main
-            let mainColor: Color = key.fixed ? Color.white.opacity(0.35) : Color.white.opacity(0.92)
+            let mainColor: Color = key.fixed ? Color.primary.opacity(0.35) : Color.primary.opacity(0.9)
             VStack(spacing: 1) {
                 if let top = legend.top, target == nil {
-                    Text(top).font(.system(size: max(unit * 0.2, 7), weight: .medium)).foregroundStyle(Color.white.opacity(0.6))
+                    Text(top).font(.system(size: max(unit * 0.2, 7), weight: .medium)).foregroundStyle(Color.secondary)
                 }
                 Text(main)
                     .font(.system(size: fontSize(main), weight: .semibold))
                     .foregroundStyle(mainColor)
                 if key.label == nil, let hint = Keys.macHint[key.usage] {
-                    Text(hint).font(.system(size: max(unit * 0.2, 7))).foregroundStyle(theme.pink.opacity(0.9))
+                    Text(hint).font(.system(size: max(unit * 0.2, 7))).foregroundStyle(theme.accent.opacity(0.9))
                 }
             }
         }
@@ -463,23 +488,23 @@ struct KeyCap: View {
     }
 
     private func capColors(_ remapped: Bool) -> [Color] {
-        if lit { return [theme.pink.opacity(0.95), theme.purple] }
-        if selected { return [theme.purple.opacity(0.95), theme.indigo] }
-        if remapped && enabled { return [theme.purple.opacity(0.55), theme.indigo.opacity(0.55)] }
-        if remapped { return [Color(white: 0.28), Color(white: 0.2)] }
-        return hover.on && !key.fixed ? [Color(white: 0.26), Color(white: 0.17)] : [Color(white: 0.2), Color(white: 0.12)]
+        if lit { return [theme.accent.opacity(0.55), theme.accent.opacity(0.4)] }
+        if selected { return [theme.accent.opacity(0.35), theme.accent.opacity(0.25)] }
+        if remapped && enabled { return [theme.accent.opacity(0.2), theme.accent.opacity(0.14)] }
+        if colorScheme == .dark {
+            return hover.on && !key.fixed ? [Color(white: 0.30), Color(white: 0.22)] : [Color(white: 0.24), Color(white: 0.15)]
+        }
+        return hover.on && !key.fixed ? [Color.white, Color(white: 0.91)] : [Color(white: 0.96), Color(white: 0.85)]
     }
 
     private func borderColor(_ remapped: Bool) -> AnyShapeStyle {
-        if selected { return AnyShapeStyle(Theme.rim) }
-        if remapped && enabled { return AnyShapeStyle(theme.pink.opacity(0.7)) }
-        return AnyShapeStyle(Color.white.opacity(0.08))
+        if selected || lit { return AnyShapeStyle(theme.accent.opacity(0.9)) }
+        if remapped && enabled { return AnyShapeStyle(theme.accent.opacity(0.55)) }
+        return AnyShapeStyle(Color.primary.opacity(0.18))
     }
 
     private func glowColor(_ remapped: Bool) -> Color {
-        if lit { return theme.pink.opacity(0.9) }
-        if selected { return theme.purple.opacity(0.9) }
-        return remapped && enabled ? theme.purple.opacity(0.6) : .clear
+        selected || lit ? theme.accent.opacity(0.2) : .clear
     }
 }
 

@@ -8,6 +8,11 @@
 #include <IOKit/IOCFPlugIn.h>
 #include <string.h>
 #include <unistd.h>
+#include <pthread.h>
+
+// Keyboard and mouse lighting run on different threads: one request at a time over the shared device table
+// (two at once raced on it, and the keyboard's commands could fail while the mouse's went through).
+static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
 // a few open devices, by vendor/product
 #define SLOTS 8
@@ -47,7 +52,7 @@ static void forget(int vendor, int product) {
 }
 
 /// Is this USB device plugged in?
-int usb_present(int vendor, int product) {
+int usb_present(int vendor, int product) {   // read-only, no table access
     CFMutableDictionaryRef m = IOServiceMatching(kIOUSBDeviceClassName);
     CFNumberRef v = CFNumberCreate(NULL, kCFNumberIntType, &vendor), p = CFNumberCreate(NULL, kCFNumberIntType, &product);
     CFDictionarySetValue(m, CFSTR(kUSBVendorID), v);
@@ -66,8 +71,19 @@ static kern_return_t class_request(IOUSBDeviceInterface **d, int in, int request
 }
 
 /// Razer: sends one command; returns the status byte (2 = OK) or -1 when the device isn't reachable.
+static int razer_send_locked(int vendor, int product, int iface, unsigned char tid,
+                             unsigned char cls, unsigned char cmd, unsigned char size, const unsigned char *args);
+
 int razer_send_to(int vendor, int product, int iface, unsigned char tid,
                   unsigned char cls, unsigned char cmd, unsigned char size, const unsigned char *args) {
+    pthread_mutex_lock(&lock);
+    int r = razer_send_locked(vendor, product, iface, tid, cls, cmd, size, args);
+    pthread_mutex_unlock(&lock);
+    return r;
+}
+
+static int razer_send_locked(int vendor, int product, int iface, unsigned char tid,
+                             unsigned char cls, unsigned char cmd, unsigned char size, const unsigned char *args) {
     unsigned char r[90] = {0};
     r[1] = tid; r[5] = size; r[6] = cls; r[7] = cmd;
     if (args && size) memcpy(r + 8, args, size > 80 ? 80 : size);
@@ -102,11 +118,14 @@ int usb_output_report(int vendor, int product, int iface, const unsigned char *b
     unsigned char copy[64] = {0};
     if (len > 64) len = 64;
     memcpy(copy, buf, len);
+    int result = -1;
+    pthread_mutex_lock(&lock);
     for (int attempt = 0; attempt < 2; attempt++) {
         IOUSBDeviceInterface **d = device(vendor, product);
-        if (!d) return -1;
-        if (class_request(d, 0, 0x09, 0x200 | copy[0], iface, copy, len) == kIOReturnSuccess) return 0;
+        if (!d) break;
+        if (class_request(d, 0, 0x09, 0x200 | copy[0], iface, copy, len) == kIOReturnSuccess) { result = 0; break; }
         forget(vendor, product);
     }
-    return -1;
+    pthread_mutex_unlock(&lock);
+    return result;
 }
