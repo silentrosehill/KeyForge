@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.10.1 (build 24)
+- Refreshed macOS design with native Liquid Glass controls, a simpler sidebar, neutral keycaps and a new app icon
+- Appearance now supports System, Light and Dark modes, accent colors and adjustable glass opacity
+- Double-click a key to bind its replacement in a minimal centered popup; fixes capture when moving between key editors
+- Fix: keyboard and mouse lighting could send at the same moment and share the USB connection table unsafely; they now take turns
+- Each keyboard lighting change and the keyboard's answer is written to ~/Library/Logs/KeyForge.log
+
 ## 1.10.0 (build 23)
 - Mouse Lighting in the Mouse tab: Sync with the keyboard, Solid, Per Zone, Breathing, Cycle, Wave and Off, with brightness and speed, the color presets, Pick from Screen, a custom color and your saved colors
 - Works with the Logitech G203 LIGHTSYNC (3 zones), the Razer Viper Ultimate (wired and wireless) and the Razer Mouse Dock, over USB with no Logitech or Razer software

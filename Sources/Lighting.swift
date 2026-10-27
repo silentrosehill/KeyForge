@@ -103,7 +103,11 @@ enum LightingController {
                 guard let job = pending else { return }
                 pending = nil
                 switch job {
-                case .effect(let l): send(l)
+                case .effect(let l):
+                    statuses = []
+                    send(l)
+                    let bad = statuses.filter { $0 != 2 }
+                    AutoSwitchLog.write("keyboard lighting \(l.effect) → " + (bad.isEmpty ? "ok (\(statuses.count) commands)" : "FAILED \(statuses)"))
                 case .frame(let f, let b): sendRows { f[$0] ?? 0 }; setBrightness(b)
                 }
             }
@@ -130,8 +134,12 @@ enum LightingController {
         cmd(0x0F, 0x02, [0x00, 0x00, 0x08, 0, 0, 0, 0, 0, 0, 0, 0, 0])
     }
 
+    /// Status bytes of the last send (2 = OK), for the log.
+    private static var statuses: [Int32] = []
+
     private static func cmd(_ cls: UInt8, _ id: UInt8, _ args: [UInt8]) {
-        _ = args.withUnsafeBufferPointer { razer_send(0x1532, product, cls, id, UInt8(args.count), $0.baseAddress) }
+        let st = args.withUnsafeBufferPointer { razer_send(0x1532, product, cls, id, UInt8(args.count), $0.baseAddress) }
+        statuses.append(st)
     }
 
     private static func send(_ l: Lighting) {
@@ -364,7 +372,17 @@ struct LightingCard: View {
         let l = lighting.wrappedValue
         let cur = currentHex(l)
         GlassCard {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 20) {
+                HStack(spacing: 10) {
+                    Image(systemName: "slider.horizontal.3").foregroundStyle(theme.accent)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Color & effects").font(.system(size: 15, weight: .semibold))
+                    }
+                    Spacer()
+                    Text(l.title).font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(theme.accent).padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(Capsule().fill(theme.accent.opacity(0.08)))
+                }
                 effectRow("Effects", Lighting.Effect.builtIn, l)
                 effectRow("Live", Lighting.Effect.live, l)
                 if l.effect.isLive { liveInfo(l) }
@@ -480,7 +498,7 @@ struct LightingCard: View {
                     Image(systemName: "sun.min").foregroundStyle(.secondary)
                     Slider(value: lighting.brightness, in: 0...1)
                     Image(systemName: "sun.max.fill").foregroundStyle(.secondary)
-                    Text("\(Int(l.brightness * 100))%").monospacedDigit().foregroundStyle(.secondary).frame(width: 44, alignment: .trailing)
+                    Text("\(Int((l.brightness * 100).rounded()))%").monospacedDigit().foregroundStyle(.secondary).frame(width: 44, alignment: .trailing)
                     if l.effect == .wave {
                         GlassSegmented(selection: lighting.waveRight, options: [(false, "← Left"), (true, "Right →")])
                             .frame(width: 190)
@@ -534,16 +552,60 @@ struct LightingCard: View {
     }
 
     private func effectRow(_ title: String, _ effects: [Lighting.Effect], _ l: Lighting) -> some View {
-        HStack(spacing: 8) {
-            Text(title).font(.subheadline).foregroundStyle(.secondary).frame(width: 58, alignment: .leading)
-            GlassSegmented(selection: Binding(get: { l.effect }, set: { e in
-                                var n = lighting.wrappedValue
-                                if e == .perKey && n.effect != .perKey { brush.hex = n.baseHex == 0xFFFFFF ? 0xB23AEE : 0xFFFFFF }
-                                n.effect = e
-                                lighting.wrappedValue = n
-                                if e == .ripple || e == .heatmap { tap.ensureRunning(); if !tap.trusted { tap.requestAccess() } }
-                           }),
-                           options: effects.map { e in (e, { var x = Lighting(); x.effect = e; return x.title }()) })
+        VStack(alignment: .leading, spacing: 9) {
+            Text(title.uppercased()).font(.system(size: 9, weight: .semibold)).tracking(1.5).foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                ForEach(effects, id: \.self) { effect in
+                    effectButton(effect, lighting: l)
+                }
+            }
+        }
+    }
+
+    private func effectButton(_ effect: Lighting.Effect, lighting l: Lighting) -> some View {
+        let selected = l.effect == effect
+        var preview = Lighting()
+        preview.effect = effect
+        return Button {
+            var n = lighting.wrappedValue
+            if effect == .perKey && n.effect != .perKey { brush.hex = n.baseHex == 0xFFFFFF ? 0xB23AEE : 0xFFFFFF }
+            n.effect = effect
+            lighting.wrappedValue = n
+            if effect == .ripple || effect == .heatmap { tap.ensureRunning(); if !tap.trusted { tap.requestAccess() } }
+        } label: {
+            VStack(spacing: 8) {
+                Image(systemName: effectIcon(effect)).font(.system(size: 19, weight: .light))
+                    .foregroundStyle(selected ? AnyShapeStyle(theme.accent) : AnyShapeStyle(Color.secondary))
+                Text(preview.title).font(.system(size: 10, weight: selected ? .semibold : .medium))
+                    .lineLimit(1).minimumScaleFactor(0.8)
+            }
+            .frame(maxWidth: .infinity).frame(height: 56)
+            .background {
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .fill(selected ? theme.accent.opacity(0.1) : Color.primary.opacity(0.025))
+                    .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous)
+                        .strokeBorder(selected ? AnyShapeStyle(theme.accent.opacity(0.35)) : AnyShapeStyle(Color.primary.opacity(0.065)), lineWidth: 1))
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 13))
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+    }
+
+    private func effectIcon(_ effect: Lighting.Effect) -> String {
+        switch effect {
+        case .solid: "circle.fill"
+        case .perKey: "keyboard"
+        case .breathing: "wind"
+        case .reactive: "bolt"
+        case .wave: "water.waves"
+        case .spectrum: "circle.lefthalf.filled"
+        case .off: "power"
+        case .ripple: "dot.radiowaves.left.and.right"
+        case .rain: "cloud.rain"
+        case .heatmap: "flame"
+        case .cover: "square.stack"
+        case .music: "waveform"
         }
     }
 

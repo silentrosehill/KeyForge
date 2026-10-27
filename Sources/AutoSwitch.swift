@@ -88,7 +88,7 @@ struct AutoSwitchRow: View {
         if let p = store.active {
             HStack(spacing: 6) {
                 Image(systemName: "arrow.triangle.2.circlepath").font(.caption).foregroundStyle(.secondary)
-                Text(p.apps.isEmpty ? "Turns on by itself for:" : "Turns on for").font(.callout).foregroundStyle(.secondary)
+                Text("Auto-switch").font(.callout).foregroundStyle(.secondary)
                 ForEach(p.apps, id: \.self) { id in
                     HStack(spacing: 4) {
                         Image(nsImage: AppWatcher.icon(of: id)).resizable().frame(width: 16, height: 16)
@@ -272,10 +272,7 @@ struct GameModeCard: View {
             HStack(spacing: 10) {
                 Image(systemName: "gamecontroller.fill").font(.system(size: 18, weight: .semibold)).foregroundStyle(theme.purple)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Game Mode").font(.headline)
-                    Text(on ? "KeyForge picks the profile for you, by the app in front"
-                            : "Switch profiles by themselves when you play and when you stop")
-                        .font(.caption).foregroundStyle(.secondary)
+                    Text("Game Mode").font(.system(size: 13, weight: .semibold))
                 }
                 Spacer()
                 Toggle("Game Mode", isOn: Binding(get: { on }, set: { v in withAnimation { store.setGameMode(v) } }))
@@ -299,16 +296,10 @@ struct GameModeCard: View {
                     }
                 }
                 .font(.callout)
-                Text("Games are found by themselves: Windows games in CrossOver/Wine, Steam games and Mac games. Launchers like Steam count as desktop.")
-                    .font(.caption).foregroundStyle(.tertiary)
             }
         }
-        .padding(14)
-        .background {
-            let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
-            shape.fill(on ? theme.purple.opacity(0.10) : Color.primary.opacity(0.05))
-                .overlay(shape.strokeBorder(Color.primary.opacity(0.09), lineWidth: 0.5))
-        }
+        .padding(18)
+        .background(ForgePanel(cornerRadius: 20))
     }
 
     private func choice(_ title: String, _ current: UUID?, _ profiles: [Profile], set: @escaping (UUID?) -> Void) -> some View {

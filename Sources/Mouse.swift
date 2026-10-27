@@ -152,6 +152,10 @@ struct MouseTab: View {
             HStack(alignment: .top, spacing: 18) {
                 GlassCard {
                     VStack(spacing: 14) {
+                        HStack {
+                            Text("BUTTONS").font(.caption.weight(.bold)).tracking(1.2).foregroundStyle(.secondary)
+                            Spacer()
+                        }
                         MouseDrawing(binds: binds, selected: $ui.selected, pressed: live.mouseDown,
                                      glow: store.mouseLightingProfile?.mouseLighting?
                                         .resolved(keyboard: store.lightingProfile?.lighting ?? .standard).previewColors)
@@ -192,7 +196,7 @@ struct MouseTab: View {
                         ForEach(binds.sorted { $0.key < $1.key }, id: \.key) { b, m in
                             HStack(spacing: 8) {
                                 Text(MouseButtons.name(b)).lineLimit(1)
-                                Image(systemName: "arrow.right").font(.caption.weight(.bold)).foregroundStyle(theme.pink)
+                                Image(systemName: "arrow.right").font(.caption.weight(.bold)).foregroundStyle(theme.accent)
                                 Text(m.label(iso: store.iso)).fontWeight(.semibold).lineLimit(1)
                                 Spacer(minLength: 4)
                                 Button { withAnimation { store.setMouse(b, nil) } } label: {
@@ -202,7 +206,7 @@ struct MouseTab: View {
                             }
                             .font(.callout)
                             .padding(.horizontal, 12).padding(.vertical, 8)
-                            .background(Capsule().fill(ui.selected == b ? theme.purple.opacity(0.3) : Color.primary.opacity(0.05)))
+                            .background(Capsule().fill(ui.selected == b ? theme.accent.opacity(0.16) : Color.primary.opacity(0.05)))
                             .overlay(Capsule().strokeBorder(Color.primary.opacity(0.09), lineWidth: 0.5))
                             .contentShape(Capsule())
                             .onTapGesture { ui.selected = b }
@@ -213,16 +217,14 @@ struct MouseTab: View {
 
             MouseLightingCard(store: store)
 
-            Text("Works with any mouse. Left and right click always stay as they are. Binds follow the profile that's on, so a game profile can have its own.")
-                .font(.caption).foregroundStyle(.secondary)
         }
         .onDisappear { live.mouseRecorder = nil }
     }
 
     private func chipFill(_ b: Int, _ binds: [Int: MouseAction]) -> Color {
-        if ui.selected == b { return theme.purple.opacity(0.85) }
-        if live.mouseDown.contains(b) { return theme.pink.opacity(0.7) }
-        return binds[b] != nil ? theme.purple.opacity(0.3) : Color.primary.opacity(0.06)
+        if ui.selected == b { return theme.accent.opacity(0.35) }
+        if live.mouseDown.contains(b) { return theme.accent.opacity(0.5) }
+        return binds[b] != nil ? theme.accent.opacity(0.16) : Color.primary.opacity(0.06)
     }
 }
 
@@ -234,6 +236,7 @@ struct MouseDrawing: View {
     /// the mouse's light colors (nil = KeyForge doesn't control them)
     var glow: [Color]? = nil
     @Environment(\.appTheme) private var theme
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         GeometryReader { geo in
@@ -242,19 +245,22 @@ struct MouseDrawing: View {
             ZStack(alignment: .topLeading) {
                 // shell
                 RoundedRectangle(cornerRadius: bodyRect.width * 0.48, style: .continuous)
-                    .fill(LinearGradient(colors: [Color(white: 0.22), Color(white: 0.09)], startPoint: .top, endPoint: .bottom))
+                    .fill(LinearGradient(colors: colorScheme == .dark
+                                         ? [Color(white: 0.27), Color(white: 0.13)]
+                                         : [Color(white: 0.96), Color(white: 0.78)],
+                                         startPoint: .topLeading, endPoint: .bottomTrailing))
                     .overlay(RoundedRectangle(cornerRadius: bodyRect.width * 0.48, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.1), lineWidth: 1))
+                        .strokeBorder(Color.primary.opacity(0.18), lineWidth: 0.5))
                     .frame(width: bodyRect.width, height: bodyRect.height)
                     .offset(x: bodyRect.minX)
-                    .shadow(color: .black.opacity(0.4), radius: 10, y: 6)
+                    .shadow(color: .black.opacity(colorScheme == .dark ? 0.25 : 0.12), radius: 10, y: 5)
                 // left / right click (locked) split + palm line
                 Path { p in
                     p.move(to: CGPoint(x: bodyRect.midX, y: 6)); p.addLine(to: CGPoint(x: bodyRect.midX, y: h * 0.4))
                     p.move(to: CGPoint(x: bodyRect.minX + 8, y: h * 0.4))
                     p.addQuadCurve(to: CGPoint(x: bodyRect.maxX - 8, y: h * 0.4), control: CGPoint(x: bodyRect.midX, y: h * 0.45))
                 }
-                .stroke(Color.black.opacity(0.6), lineWidth: 2)
+                .stroke(Color.primary.opacity(0.18), lineWidth: 1)
                 lockLabel("Left", x: bodyRect.minX + bodyRect.width * 0.25, y: h * 0.22)
                 lockLabel("Right", x: bodyRect.minX + bodyRect.width * 0.75, y: h * 0.22)
                 // wheel = button 2
@@ -263,7 +269,7 @@ struct MouseDrawing: View {
                 part(4, CGRect(x: bodyRect.minX - 14, y: h * 0.42, width: 26, height: h * 0.12), radius: 8)
                 part(3, CGRect(x: bodyRect.minX - 14, y: h * 0.56, width: 26, height: h * 0.12), radius: 8)
                 // light strip + logo, in the mouse's colors
-                let colors = glow ?? [theme.purple.opacity(0.7)]
+                let colors = glow ?? [Color.secondary.opacity(0.25)]
                 Capsule().fill(LinearGradient(colors: colors.count > 1 ? colors : colors + colors, startPoint: .leading, endPoint: .trailing))
                     .frame(width: bodyRect.width * 0.62, height: 7)
                     .blur(radius: 1.5)
@@ -280,7 +286,7 @@ struct MouseDrawing: View {
             Image(systemName: "lock.fill").font(.system(size: 10))
             Text(t).font(.caption2.weight(.semibold))
         }
-        .foregroundStyle(.white.opacity(0.35))
+        .foregroundStyle(Color.secondary)
         .position(x: x, y: y)
     }
 
@@ -289,10 +295,9 @@ struct MouseDrawing: View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
         return Button { withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { selected = b } } label: {
             shape
-                .fill(down ? AnyShapeStyle(theme.pink) : on ? AnyShapeStyle(theme.purple)
-                      : bound ? AnyShapeStyle(theme.purple.opacity(0.45)) : AnyShapeStyle(Color(white: 0.3)))
-                .overlay(shape.strokeBorder(on ? Color.white.opacity(0.8) : Color.white.opacity(0.15), lineWidth: on ? 2 : 1))
-                .shadow(color: on || down ? theme.purple.opacity(0.7) : .clear, radius: 8)
+                .fill(down ? theme.accent.opacity(0.55) : on ? theme.accent.opacity(0.35)
+                      : bound ? theme.accent.opacity(0.18) : Color.primary.opacity(0.12))
+                .overlay(shape.strokeBorder(on || down ? theme.accent.opacity(0.9) : Color.primary.opacity(0.2), lineWidth: on ? 1.5 : 0.5))
         }
         .buttonStyle(.plain)
         .frame(width: r.width, height: r.height)
@@ -315,8 +320,9 @@ struct MouseEditor: View {
         GlassCard {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(spacing: 12) {
-                    Image(systemName: MouseButtons.icon(button)).font(.system(size: 26, weight: .semibold))
-                        .foregroundStyle(theme.purple).frame(width: 40)
+                    Image(systemName: MouseButtons.icon(button)).font(.system(size: 24, weight: .semibold))
+                        .foregroundStyle(theme.accent).frame(width: 40, height: 40)
+                        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.primary.opacity(0.06)))
                     VStack(alignment: .leading, spacing: 2) {
                         Text(MouseButtons.name(button)).font(.title3.weight(.bold))
                         Text(bind.map { "Now does: \($0.label(iso: store.iso))" } ?? "Works normally")
@@ -327,6 +333,7 @@ struct MouseEditor: View {
                         .buttonStyle(.purpleGlass).disabled(bind == nil)
                 }
 
+                Text("ACTION").font(.caption.weight(.bold)).tracking(1.2).foregroundStyle(.secondary)
                 GlassSegmented(selection: Binding(get: { kind }, set: { switchKind($0) }),
                                options: MouseAction.Kind.allCases.map { ($0, $0.rawValue) })
 
@@ -355,7 +362,7 @@ struct MouseEditor: View {
                         }
                         .buttonStyle(.purpleGlassProminent)
                     }
-                    Text("The key stays pressed while you hold the button: great for push-to-talk, crouch or sprint. Media keys work too.")
+                    Text("Held while the mouse button is down.")
                         .font(.caption).foregroundStyle(.secondary)
                 case .button(let b):
                     HStack(spacing: 10) {
@@ -374,10 +381,10 @@ struct MouseEditor: View {
                                  },
                                  write: { [store, button] a in store.setMouse(button, a.map { .action($0) }) })
                 case .disabled:
-                    Text("This button does nothing (handy when a game binds it by accident).")
+                    Text("Disabled")
                         .font(.callout).foregroundStyle(.secondary)
                 case nil:
-                    Text("Pick what this button should do.").font(.callout).foregroundStyle(.secondary)
+                    EmptyView()
                 }
 
                 if bind != nil && !tap.trusted {
