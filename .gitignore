@@ -2,3 +2,7 @@ KeyForge.app
 .DS_Store
 HANDOFF.md
 dist/
+
+.build-deps/
+
+work/

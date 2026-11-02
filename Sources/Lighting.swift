@@ -9,12 +9,17 @@ struct Lighting: Codable, Equatable {
     enum Effect: String, Codable, CaseIterable {
         case solid, perKey, breathing, reactive, wave, spectrum, off
         // drawn live by KeyForge (the app has to be running)
-        case ripple, rain, heatmap, cover, music
+        case ripple, rain, heatmap, cover, music, screen
 
         static let builtIn: [Effect] = [.solid, .perKey, .breathing, .reactive, .wave, .spectrum, .off]
-        static let live: [Effect] = [.ripple, .rain, .heatmap, .cover, .music]
+        static let live: [Effect] = [.ripple, .rain, .heatmap, .cover, .music, .screen]
         var isLive: Bool { Self.live.contains(self) }
     }
+    enum ScreenStyle: String, Codable { case regional, uniform }
+    var screenStyle: ScreenStyle = .regional
+    var screenTransition = 0.55
+    var screenIgnoreBlackBars = true
+    var layers: [LightingLayer] = []
     var effect: Effect = .solid
     /// The main color (Per Key: the color of keys you haven't painted).
     var red = 0.70, green = 0.23, blue = 0.93
@@ -30,6 +35,10 @@ struct Lighting: Codable, Equatable {
     // older profiles.json files don't have every field
     init(from d: Decoder) throws {
         let c = try d.container(keyedBy: CodingKeys.self)
+        screenStyle = (try? c.decodeIfPresent(ScreenStyle.self, forKey: .screenStyle)) ?? .regional
+        screenTransition = max(0, min(1, (try? c.decodeIfPresent(Double.self, forKey: .screenTransition)) ?? 0.55))
+        screenIgnoreBlackBars = (try? c.decodeIfPresent(Bool.self, forKey: .screenIgnoreBlackBars)) ?? true
+        layers = (try? c.decodeIfPresent([LightingLayer].self, forKey: .layers)) ?? []
         effect = (try? c.decodeIfPresent(Effect.self, forKey: .effect)) ?? .solid
         red = try c.decodeIfPresent(Double.self, forKey: .red) ?? red
         green = try c.decodeIfPresent(Double.self, forKey: .green) ?? green
@@ -72,6 +81,7 @@ struct Lighting: Codable, Equatable {
         case .heatmap: "Heatmap"
         case .cover: "Album Cover"
         case .music: "Music"
+        case .screen: "Screen Color"
         }
     }
 }
@@ -108,7 +118,9 @@ enum LightingController {
                     send(l)
                     let bad = statuses.filter { $0 != 2 }
                     AutoSwitchLog.write("keyboard lighting \(l.effect) → " + (bad.isEmpty ? "ok (\(statuses.count) commands)" : "FAILED \(statuses)"))
-                case .frame(let f, let b): sendRows { f[$0] ?? 0 }; setBrightness(b)
+                case .frame(let f, let b):
+                    statuses = []
+                    sendRows { f[$0] ?? 0 }; setBrightness(b)
                 }
             }
         }
@@ -154,7 +166,7 @@ enum LightingController {
         case .wave:      cmd(0x0F, 0x02, [0x01, 0x05, 0x04, l.waveRight ? 0x01 : 0x02, 0x28, 0x00])
         case .perKey:
             sendRows { l.hex(for: $0) }
-        case .ripple, .rain, .heatmap, .cover, .music:
+        case .ripple, .rain, .heatmap, .cover, .music, .screen:
             break   // LightingEngine sends these as frames
         }
         setBrightness(l.brightness, force: true)
@@ -326,11 +338,19 @@ final class SavedColors: ObservableObject {
 final class PaintBrush: ObservableObject {
     static let shared = PaintBrush()
     @Published var hex: UInt32 = 0xFFFFFF
+    @Published var selectedLayerID: UUID?
 
     /// Paints (or erases) one key of the active profile.
     func paint(_ key: Usage, erase: Bool, store: ProfileStore) {
-        guard var l = store.active?.lighting ?? Optional(.standard), l.effect == .perKey else { return }
+        guard var l = store.active?.lighting ?? Optional(.standard) else { return }
         let want: UInt32? = erase ? nil : hex
+        if let id = selectedLayerID, let index = l.layers.firstIndex(where: { $0.id == id }) {
+            guard l.layers[index].keyColors[key] != want else { return }
+            l.layers[index].keyColors[key] = want
+            store.setLighting(l)
+            return
+        }
+        guard l.effect == .perKey else { return }
         guard l.keyColors[key] != want else { return }
         l.keyColors[key] = want
         store.setLighting(l)
@@ -358,11 +378,11 @@ struct LightingCard: View {
     }
 
     /// The color the controls show and change: the brush in Per Key mode, otherwise the lighting color.
-    private func currentHex(_ l: Lighting) -> UInt32 { l.effect == .perKey ? brush.hex : l.baseHex }
+    private func currentHex(_ l: Lighting) -> UInt32 { (l.effect == .perKey || l.layers.contains { $0.id == brush.selectedLayerID }) ? brush.hex : l.baseHex }
 
     private func choose(_ hex: UInt32) {
         var n = lighting.wrappedValue
-        if n.effect == .perKey { brush.hex = hex; return }
+        if n.effect == .perKey || n.layers.contains(where: { $0.id == brush.selectedLayerID }) { brush.hex = hex; return }
         n.baseHex = hex
         if !n.usesColor { n.effect = .solid }
         lighting.wrappedValue = n
@@ -387,111 +407,114 @@ struct LightingCard: View {
                 effectRow("Live", Lighting.Effect.live, l)
                 if l.effect.isLive { liveInfo(l) }
 
-                // premade looks + randomizer (they switch to Per Key)
-                HStack(spacing: 8) {
-                    Text("Themes").font(.subheadline).foregroundStyle(.secondary).frame(width: 58, alignment: .leading)
-                    ForEach(LightingPreset.allCases) { p in
+                if l.effect != .screen {
+                    // premade looks + randomizer (they switch to Per Key)
+                    HStack(spacing: 8) {
+                        Text("Themes").font(.subheadline).foregroundStyle(.secondary).frame(width: 58, alignment: .leading)
+                        ForEach(LightingPreset.allCases) { p in
+                            Button {
+                                var n = l
+                                n.effect = .perKey
+                                n.keyColors = p.keyColors(iso: store.iso)
+                                n.baseHex = p.preview[1]
+                                withAnimation(.easeInOut(duration: 0.25)) { lighting.wrappedValue = n }
+                            } label: {
+                                Text(p.rawValue)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.white)
+                                    .shadow(color: .black.opacity(0.6), radius: 1.5)
+                                    .lineLimit(1)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 6)
+                                    .background(Capsule().fill(LinearGradient(colors: p.preview.map { Color(hex: $0) },
+                                                                              startPoint: .leading, endPoint: .trailing)))
+                                    .overlay(Capsule().strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.5))
+                                    .contentShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .help("\(p.rawValue) theme (Per Key)")
+                        }
                         Button {
                             var n = l
                             n.effect = .perKey
-                            n.keyColors = p.keyColors(iso: store.iso)
-                            n.baseHex = p.preview[1]
-                            withAnimation(.easeInOut(duration: 0.25)) { lighting.wrappedValue = n }
+                            n.keyColors = LightingPreset.random(iso: store.iso)
+                            lighting.wrappedValue = n
                         } label: {
-                            Text(p.rawValue)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.white)
-                                .shadow(color: .black.opacity(0.6), radius: 1.5)
-                                .lineLimit(1)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 6)
-                                .background(Capsule().fill(LinearGradient(colors: p.preview.map { Color(hex: $0) },
-                                                                          startPoint: .leading, endPoint: .trailing)))
-                                .overlay(Capsule().strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.5))
-                                .contentShape(Capsule())
+                            Label("Randomize", systemImage: "dice.fill").fixedSize()
                         }
-                        .buttonStyle(.plain)
-                        .help("\(p.rawValue) theme (Per Key)")
+                        .buttonStyle(.purpleGlassProminent)
+                        .help("Give every key its own random color (click again for a new mix)")
                     }
-                    Button {
-                        var n = l
-                        n.effect = .perKey
-                        n.keyColors = LightingPreset.random(iso: store.iso)
-                        lighting.wrappedValue = n
-                    } label: {
-                        Label("Randomize", systemImage: "dice.fill").fixedSize()
-                    }
-                    .buttonStyle(.purpleGlassProminent)
-                    .help("Give every key its own random color (click again for a new mix)")
-                }
 
-                HStack(alignment: .center, spacing: 18) {
-                    // big color preview + pickers
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(preview(l, cur))
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(LinearGradient(colors: [.white.opacity(0.3), .clear], startPoint: .top, endPoint: .center))
-                    }
-                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(.white.opacity(0.22), lineWidth: 0.5))
-                    .frame(width: 64, height: 64)
+                    HStack(alignment: .center, spacing: 18) {
+                        // big color preview + pickers
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .fill(preview(l, cur))
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .fill(LinearGradient(colors: [.white.opacity(0.3), .clear], startPoint: .top, endPoint: .center))
+                        }
+                        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(.white.opacity(0.22), lineWidth: 0.5))
+                        .frame(width: 64, height: 64)
 
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack(spacing: 8) {
-                            ForEach(Self.swatches, id: \.0) { s in
-                                swatch(s.1, on: l.usesColor && cur == s.1).help(s.0)
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(spacing: 8) {
+                                ForEach(Self.swatches, id: \.0) { s in
+                                    swatch(s.1, on: l.usesColor && cur == s.1).help(s.0)
+                                }
                             }
-                        }
 
-                        // your own colors
-                        HStack(spacing: 8) {
-                            ForEach(saved.colors, id: \.self) { hex in
-                                swatch(hex, on: l.usesColor && cur == hex)
-                                    .help(String(format: "#%06X · right-click to remove", hex))
-                                    .contextMenu {
-                                        Button("Remove Color", role: .destructive) { withAnimation { saved.remove(hex) } }
+                            // your own colors
+                            HStack(spacing: 8) {
+                                ForEach(saved.colors, id: \.self) { hex in
+                                    swatch(hex, on: l.usesColor && cur == hex)
+                                        .help(String(format: "#%06X · right-click to remove", hex))
+                                        .contextMenu {
+                                            Button("Remove Color", role: .destructive) { withAnimation { saved.remove(hex) } }
+                                        }
+                                        .transition(.scale.combined(with: .opacity))
+                                }
+                                let canSave = l.usesColor && !saved.colors.contains(cur)
+                                Button { withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { saved.add(cur) } } label: {
+                                    ZStack {
+                                        Circle().strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [3, 3]))
+                                            .foregroundStyle(.secondary)
+                                        Image(systemName: "plus").font(.system(size: 12, weight: .bold)).foregroundStyle(.secondary)
                                     }
-                                    .transition(.scale.combined(with: .opacity))
-                            }
-                            let canSave = l.usesColor && !saved.colors.contains(cur)
-                            Button { withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { saved.add(cur) } } label: {
-                                ZStack {
-                                    Circle().strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [3, 3]))
-                                        .foregroundStyle(.secondary)
-                                    Image(systemName: "plus").font(.system(size: 12, weight: .bold)).foregroundStyle(.secondary)
+                                    .frame(width: 28, height: 28)
+                                    .contentShape(Circle())
                                 }
-                                .frame(width: 28, height: 28)
-                                .contentShape(Circle())
+                                .buttonStyle(.plain)
+                                .disabled(!canSave)
+                                .opacity(canSave ? 1 : 0.4)
+                                .help(saved.colors.contains(cur) ? "This color is already saved" : "Save the current color")
+                                if saved.colors.isEmpty {
+                                    Text("Save your own colors here").font(.caption).foregroundStyle(.secondary)
+                                }
                             }
-                            .buttonStyle(.plain)
-                            .disabled(!canSave)
-                            .opacity(canSave ? 1 : 0.4)
-                            .help(saved.colors.contains(cur) ? "This color is already saved" : "Save the current color")
-                            if saved.colors.isEmpty {
-                                Text("Save your own colors here").font(.caption).foregroundStyle(.secondary)
+
+                            HStack(spacing: 10) {
+                                Button {
+                                    NSColorSampler().show { picked in
+                                        guard let picked else { return }
+                                        choose(Color(nsColor: picked).hex)
+                                    }
+                                } label: {
+                                    Label("Pick from Screen", systemImage: "eyedropper")
+                                }
+                                .buttonStyle(.purpleGlassProminent)
+                                .help("Click anywhere on your screen to use that color")
+
+                                ColorPicker("Custom", selection: Binding(get: { Color(hex: cur) }, set: { choose($0.hex) }),
+                                            supportsOpacity: false)
+
+                                Text(String(format: "#%06X", cur)).font(.callout.monospaced()).foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
                             }
                         }
-
-                        HStack(spacing: 10) {
-                            Button {
-                                NSColorSampler().show { picked in
-                                    guard let picked else { return }
-                                    choose(Color(nsColor: picked).hex)
-                                }
-                            } label: {
-                                Label("Pick from Screen", systemImage: "eyedropper")
-                            }
-                            .buttonStyle(.purpleGlassProminent)
-                            .help("Click anywhere on your screen to use that color")
-
-                            ColorPicker("Custom", selection: Binding(get: { Color(hex: cur) }, set: { choose($0.hex) }),
-                                        supportsOpacity: false)
-
-                            Text(String(format: "#%06X", cur)).font(.callout.monospaced()).foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-                        }
+                        Spacer()
                     }
-                    Spacer()
+
                 }
 
                 HStack(spacing: 12) {
@@ -525,6 +548,8 @@ struct LightingCard: View {
                     }
                 }
 
+                Divider()
+                LightingLayerControls(lighting: lighting)
                 Divider()
                 HStack(spacing: 10) {
                     Toggle(isOn: $engine.capsLight) {
@@ -606,6 +631,7 @@ struct LightingCard: View {
         case .heatmap: "flame"
         case .cover: "square.stack"
         case .music: "waveform"
+        case .screen: "display"
         }
     }
 
@@ -633,6 +659,8 @@ struct LightingCard: View {
                 } else {
                     Text("The columns dance to whatever your Mac is playing.")
                 }
+            case .screen:
+                ScreenColorInfo(lighting: lighting)
             default: EmptyView()
             }
             Spacer()
@@ -644,8 +672,10 @@ struct LightingCard: View {
             }
         }
         .font(.callout).foregroundStyle(.secondary)
-        Text("Live effects are drawn by KeyForge, so they run while it's open (it stays in the menu bar).")
-            .font(.caption).foregroundStyle(.tertiary)
+        if l.effect != .screen {
+            Text("Live effects run while KeyForge is open.")
+                .font(.caption).foregroundStyle(.tertiary)
+        }
     }
 
     private func swatch(_ hex: UInt32, on: Bool) -> some View {
@@ -664,6 +694,115 @@ struct LightingCard: View {
         case .wave, .spectrum:
             AnyShapeStyle(AngularGradient(colors: [.red, .yellow, .green, .cyan, .blue, .purple, .red], center: .center))
         default: AnyShapeStyle(Color(hex: cur))
+        }
+    }
+}
+
+private struct ScreenColorInfo: View {
+    @ObservedObject private var capture = ScreenColorCapture.shared
+    @Binding var lighting: Lighting
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(capture.status)
+            Picker("Matching", selection: $lighting.screenStyle) {
+                Text("Regional").tag(Lighting.ScreenStyle.regional)
+                Text("Whole keyboard").tag(Lighting.ScreenStyle.uniform)
+            }
+            .labelsHidden().pickerStyle(.segmented)
+            .accessibilityLabel("Screen color matching")
+            .frame(maxWidth: 280)
+            HStack {
+                Text("Transition speed")
+                Slider(value: $lighting.screenTransition, in: 0...1)
+                    .accessibilityLabel("Transition speed")
+                    .frame(maxWidth: 160)
+                Text("Fast").font(.caption)
+            }
+            Toggle("Ignore black bars", isOn: $lighting.screenIgnoreBlackBars)
+                .toggleStyle(.checkbox)
+            if capture.displays.count > 1 {
+                Picker("Display", selection: $capture.selectedDisplayID) {
+                    ForEach(capture.displays) { display in
+                        Text(display.name).tag(display.id)
+                    }
+                }
+                .frame(maxWidth: 240)
+            }
+            if capture.needsPermission {
+                Button("Allow Screen Access") { capture.requestAccess() }
+                    .buttonStyle(.purpleGlassProminent)
+            } else if !capture.isCapturing {
+                Button("Retry") { capture.retry() }
+                    .buttonStyle(.purpleGlass)
+            }
+        }
+    }
+}
+
+struct LightingLayerControls: View {
+    @Binding var lighting: Lighting
+    @ObservedObject private var brush = PaintBrush.shared
+
+    private func binding<T>(_ id: UUID, _ path: WritableKeyPath<LightingLayer, T>, fallback: T) -> Binding<T> {
+        Binding(get: { lighting.layers.first(where: { $0.id == id })?[keyPath: path] ?? fallback },
+                set: { value in
+                    guard let i = lighting.layers.firstIndex(where: { $0.id == id }) else { return }
+                    lighting.layers[i][keyPath: path] = value
+                })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Painted layers").font(.subheadline.weight(.semibold))
+                Spacer()
+                if brush.selectedLayerID != nil {
+                    Button("Done Painting") { brush.selectedLayerID = nil }.buttonStyle(.purpleGlass)
+                }
+                Button {
+                    let layer = LightingLayer(name: "Layer \(lighting.layers.count + 1)")
+                    lighting.layers.append(layer)
+                    brush.selectedLayerID = layer.id
+                } label: { Label("Add Layer", systemImage: "plus") }
+                .buttonStyle(.purpleGlass)
+            }
+            if lighting.layers.isEmpty {
+                Text("Add a layer to paint keys over the current effect.").font(.caption).foregroundStyle(.secondary)
+            }
+            ForEach(lighting.layers) { layer in
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Toggle("Enable layer", isOn: binding(layer.id, \.enabled, fallback: true)).labelsHidden()
+                        TextField("Layer name", text: binding(layer.id, \.name, fallback: "Layer"))
+                            .textFieldStyle(.roundedBorder).frame(maxWidth: 170)
+                        Button(brush.selectedLayerID == layer.id ? "Painting" : "Paint") {
+                            brush.selectedLayerID = layer.id
+                        }.buttonStyle(.purpleGlass)
+                        Spacer()
+                        Button(role: .destructive) {
+                            lighting.layers.removeAll { $0.id == layer.id }
+                            if brush.selectedLayerID == layer.id { brush.selectedLayerID = nil }
+                        } label: { Image(systemName: "trash") }
+                        .buttonStyle(.plain).help("Delete layer")
+                    }
+                    HStack {
+                        Text("Opacity").frame(width: 65, alignment: .leading)
+                        Slider(value: binding(layer.id, \.opacity, fallback: 1), in: 0...1)
+                        Text("\(Int((layer.opacity * 100).rounded()))%").frame(width: 40, alignment: .trailing)
+                        Text("Brightness").frame(width: 75, alignment: .leading)
+                        Slider(value: binding(layer.id, \.brightness, fallback: 1), in: 0...1)
+                        Text("\(Int((layer.brightness * 100).rounded()))%").frame(width: 40, alignment: .trailing)
+                    }.font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if lighting.layers.contains(where: { $0.id == brush.selectedLayerID }) {
+                HStack {
+                    ColorPicker("Paint color", selection: Binding(get: { Color(hex: brush.hex) }, set: { brush.hex = $0.hex }), supportsOpacity: false)
+                    Text("Click or drag on the keyboard to paint. Option-click to erase.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
         }
     }
 }

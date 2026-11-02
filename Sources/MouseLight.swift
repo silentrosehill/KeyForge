@@ -48,7 +48,7 @@ struct MouseLighting: Codable, Equatable {
     var usesColor: Bool { effect == .solid || effect == .breathing }
 
     /// What "Sync" means right now: the keyboard's effect translated for a mouse.
-    func resolved(keyboard k: Lighting?) -> MouseLighting {
+    @MainActor func resolved(keyboard k: Lighting?) -> MouseLighting {
         guard effect == .sync else { return self }
         var m = self
         guard let k else { m.effect = .solid; return m }
@@ -59,6 +59,10 @@ struct MouseLighting: Codable, Equatable {
         case .breathing: m.effect = .breathing
         case .wave: m.effect = .wave
         case .spectrum: m.effect = .cycle
+        case .screen:
+            m.effect = .zones
+            m.zones = ScreenColorGrid.zones(LightingEngine.shared.screenColors)
+            m.color = m.zones[1]
         case .perKey:
             // the colors of the keys under your hand (left, middle, right of the board)
             m.effect = .zones
@@ -108,6 +112,9 @@ final class MouseLightController: ObservableObject {
     private var current: MouseLighting?
     private var keyboard: Lighting?
     private var timer: Timer?
+    private var screenTimer: Timer?
+    @Published private(set) var screenZones: [UInt32] = [0, 0, 0]
+    private var lastScreenZones: [UInt32]?
     private let queue = DispatchQueue(label: "keyforge.mouselight")
 
     func start() {
@@ -129,7 +136,31 @@ final class MouseLightController: ObservableObject {
         start()
         let changed = m != current || (m?.effect == .sync && k != keyboard)
         current = m; keyboard = k
+        if m?.effect == .sync && k?.effect == .screen {
+            if screenTimer == nil {
+                screenTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        let zones = ScreenColorGrid.zones(LightingEngine.shared.screenColors)
+                        guard zones != self.lastScreenZones else { return }
+                        self.lastScreenZones = zones
+                        self.screenZones = zones
+                        self.send(to: self.connected)
+                    }
+                }
+            }
+        } else {
+            screenTimer?.invalidate(); screenTimer = nil; lastScreenZones = nil
+        }
         if changed { send(to: connected) }
+    }
+
+    func preview(_ lighting: MouseLighting?, keyboard: Lighting?) -> [Color]? {
+        guard let lighting else { return nil }
+        if lighting.effect == .sync && keyboard?.effect == .screen {
+            return screenZones.map { Color(hex: $0) }
+        }
+        return lighting.resolved(keyboard: keyboard).previewColors
     }
 
     private func send(to mice: [LightableMouse]) {

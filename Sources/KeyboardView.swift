@@ -81,6 +81,7 @@ final class LiveKeys: ObservableObject {
 
 /// The Huntsman V2 drawn to scale; click a key to select it.
 struct KeyboardView: View {
+    @ObservedObject private var brush = PaintBrush.shared
     @ObservedObject var store: ProfileStore
     @ObservedObject var live = LiveKeys.shared
     @Binding var selected: Usage?
@@ -105,7 +106,7 @@ struct KeyboardView: View {
                     LightingKeys(keys: keys, lighting: lighting, iso: store.iso, lit: live.down, unit: unit, pad: pad, pink: theme.accent)
                         .frame(width: w, height: h)
                         .allowsHitTesting(false)
-                    if lighting.effect == .perKey {
+                    if (lighting.effect == .perKey || brush.selectedLayerID != nil) {
                         // paint: click or drag across keys (⌥ erases)
                         Color.clear
                             .frame(width: w, height: h)

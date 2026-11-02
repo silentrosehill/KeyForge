@@ -7,7 +7,7 @@ import Accelerate
 // MARK: - The engine: hardware effects, or frames KeyForge draws itself
 
 /// Decides what the keyboard shows: a built-in effect (the keyboard animates it), or frames KeyForge
-/// renders ~25×/s (Ripple, Rain, Heatmap, Album Cover, Music), plus the Caps Lock light on top.
+/// renders ~25×/s (Screen Color uses 8×/s), plus the Caps Lock light on top.
 @MainActor
 final class LightingEngine: ObservableObject {
     static let shared = LightingEngine()
@@ -38,12 +38,17 @@ final class LightingEngine: ObservableObject {
 
     // effect state
     private var ripples: [(x: Double, y: Double, t: Double, hue: Double)] = []
+    private var reactiveKeys: [Usage: Double] = [:]
     private var drops: [(x: Double, y: Double, speed: Double, hex: UInt32)] = []
 
     static let fps = 25.0
     static let capsKey = HID.key(0x39)
 
+    private(set) var screenColors: [UInt32] = []
+    private var lastScreenTick = -1.0
+
     private var iso = true
+    private var screenFrame: [Usage: UInt32] = [:]
 
     /// (iso is passed in: reading ProfileStore.shared here would recurse while the store is still loading)
     func update(_ l: Lighting, product p: Int?, iso: Bool) {
@@ -56,14 +61,20 @@ final class LightingEngine: ObservableObject {
     private func configure() {
         keys = Keys.huntsmanV2(iso: iso)
         let e = lighting.effect
-
         // who needs key presses / audio
-        let wantsKeys = e == .ripple || e == .heatmap
+        let wantsKeys = e == .ripple || e == .heatmap || (e == .reactive && lighting.layers.contains(where: { $0.enabled }))
         if wantsKeys != (KeyTap.shared.listeners["engine"] != nil) {
             KeyTap.shared.listeners["engine"] = wantsKeys ? { [weak self] u in self?.pressed(u) } : nil
         }
         if e == .music { AudioTap.shared.start() } else { AudioTap.shared.stop() }
         if e == .cover { NowPlayingLink.shared.start() }
+        if e == .screen {
+            ScreenColorCapture.shared.configure(ignoreBlackBars: lighting.screenIgnoreBlackBars, uniform: lighting.screenStyle == .uniform)
+            ScreenColorCapture.shared.start()
+        } else {
+            ScreenColorCapture.shared.stop()
+            screenColors = []; screenFrame = [:]; lastScreenTick = -1
+        }
 
         // Caps Lock light: watch the Caps state while it's on
         if capsLight, capsTimer == nil {
@@ -79,7 +90,7 @@ final class LightingEngine: ObservableObject {
             capsTimer?.invalidate(); capsTimer = nil; capsOn = false
         }
 
-        if e.isLive {
+        if e.isLive || lighting.layers.contains(where: { $0.enabled }) {
             if timer == nil {
                 start = CFAbsoluteTimeGetCurrent()
                 let t = Timer(timeInterval: 1 / Self.fps, repeats: true) { [weak self] _ in
@@ -118,6 +129,8 @@ final class LightingEngine: ObservableObject {
             ripples.append((k.x + k.w / 2, k.y + k.h / 2, CFAbsoluteTimeGetCurrent() - start, hue))
         case .heatmap:
             Heatmap.shared.press(u)
+        case .reactive:
+            reactiveKeys[u] = CFAbsoluteTimeGetCurrent() - start
         default: break
         }
     }
@@ -125,14 +138,32 @@ final class LightingEngine: ObservableObject {
     private func tick() {
         let t = CFAbsoluteTimeGetCurrent() - start
         var f: [Usage: UInt32] = [:]
+        if lighting.effect == .screen, lastScreenTick >= 0, t - lastScreenTick < 0.12 { return }
         switch lighting.effect {
         case .ripple: f = renderRipple(t)
         case .rain: f = renderRain(t)
         case .heatmap: f = renderHeatmap()
         case .cover: f = renderCover(t)
         case .music: f = renderMusic()
-        default: return
+        case .screen:
+            if lastScreenTick < 0 || t - lastScreenTick >= 0.12 {
+                screenFrame = renderScreen(); lastScreenTick = t
+            }
+            f = screenFrame
+        default:
+            guard lighting.layers.contains(where: { $0.enabled }) else { return }
+            for k in keys {
+                switch lighting.effect {
+                case .spectrum: f[k.usage] = Color.hueShift(0xFF2222, t * 0.08)
+                case .wave: f[k.usage] = Color.hueShift(0xFF2222, k.x / Keys.layoutWidth + t * (lighting.waveRight ? -0.2 : 0.2))
+                case .breathing: f[k.usage] = Color.scale(base, 0.5 + 0.5 * sin(t * 2))
+                case .reactive: f[k.usage] = Color.scale(base, max(0, 1 - (t - (reactiveKeys[k.usage] ?? -10)) / 0.6))
+                case .off: f[k.usage] = 0
+                default: f[k.usage] = lighting.hex(for: k.usage)
+                }
+            }
         }
+        f = LightingLayers.composite(f, layers: lighting.layers)
         if capsLight && capsOn { f[Self.capsKey] = capsHex }
         if f != frame { frame = f }
         guard f != lastSent else { return }   // Heatmap / a paused cover barely change
@@ -215,6 +246,19 @@ final class LightingEngine: ObservableObject {
             f[k.usage] = Color.scale(LightingPreset.blend(stops, p), link.playing ? 1 : 0.55)
         }
         return f
+    }
+
+    private func renderScreen() -> [Usage: UInt32] {
+        let target = ScreenColorCapture.shared.colors
+        // Permission loss and display sleep clear the colors immediately.
+        screenColors = target.isEmpty ? ScreenColorGrid.black : ScreenColorGrid.smooth(target, previous: screenColors, speed: 0.05 + 0.95 * lighting.screenTransition)
+        var frame: [Usage: UInt32] = [:]
+        for key in keys {
+            if let position = LEDMatrix.position(of: key.usage) {
+                frame[key.usage] = screenColors[position.row * ScreenColorGrid.columns + position.col]
+            } else { frame[key.usage] = 0 }
+        }
+        return frame
     }
 
     private func renderMusic() -> [Usage: UInt32] {

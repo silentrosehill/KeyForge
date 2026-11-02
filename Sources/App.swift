@@ -5,6 +5,7 @@ import AppKit
 struct KeyForgeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @ObservedObject private var store = ProfileStore.shared
+    @ObservedObject private var textUndo = TextUndoContext.shared
 
     var body: some Scene {
         Window("KeyForge \(appVersion)", id: "main") {
@@ -13,12 +14,41 @@ struct KeyForgeApp: App {
         }
         .defaultSize(width: 1280, height: 800)
         .windowToolbarStyle(.unified)
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") { AppUpdater.shared.checkForUpdates() }
+            }
+            CommandGroup(after: .newItem) {
+                Button("Import Profiles…") { ProfileTransfer.shared.importProfiles(into: store) }
+                Button("Export Profiles…") { ProfileTransfer.shared.exportProfiles(store.profiles) }
+            }
+            CommandGroup(replacing: .undoRedo) {
+                Button(undoLabel) { performUndo() }
+                    .keyboardShortcut("z", modifiers: .command)
+                    .disabled(!canUndo)
+                Button(redoLabel) { performRedo() }
+                    .keyboardShortcut("z", modifiers: [.command, .shift])
+                    .disabled(!canRedo)
+            }
+        }
         .restorationBehavior(.disabled)   // always open the window when the app is launched
         MenuBarExtra {
             MenuBarContent(store: store)
         } label: {
             Image(systemName: store.enabled ? "keyboard.fill" : "keyboard")
         }
+    }
+
+    // Field editors retain their own undo stack; profile history applies elsewhere.
+    private var canUndo: Bool { textUndo.state.editing ? textUndo.state.canUndo : store.history.canUndo }
+    private var canRedo: Bool { textUndo.state.editing ? textUndo.state.canRedo : store.history.canRedo }
+    private var undoLabel: String { textUndo.state.editing ? "Undo" : store.history.undoTitle }
+    private var redoLabel: String { textUndo.state.editing ? "Redo" : store.history.redoTitle }
+    private func performUndo() {
+        if textUndo.state.editing { textUndo.manager?.undo(); textUndo.refresh() } else { store.history.undo() }
+    }
+    private func performRedo() {
+        if textUndo.state.editing { textUndo.manager?.redo(); textUndo.refresh() } else { store.history.redo() }
     }
 }
 
@@ -39,6 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ n: Notification) {
         MainActor.assumeIsolated {
             _ = ProfileStore.shared   // applies the active profile right away
+            AppUpdater.shared.start()
             AppWatcher.start()        // profiles that follow the app in front
             ProfileHotkeys.start()    // ⌃⌥1…9
             KeyTap.shared.watchActivation()
@@ -66,7 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationWillTerminate(_ n: Notification) {
-        MainActor.assumeIsolated { ProfileStore.shared.saveNow() }   // flush a pending save
+        MainActor.assumeIsolated { KeyBehaviorRuntime.shared.reset(); ProfileStore.shared.saveNow() }   // flush a pending save
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool { true }
@@ -75,6 +106,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 /// View state that would be @State (unavailable without Xcode's macro plugins).
 @MainActor
 final class UIState: ObservableObject {
+    @Published var showSearch = false
+    @Published var showDiagnostics = false
+    @Published var showBackups = false
     @Published var selected: Usage?
     @Published var bindingKey: Usage?
     @Published var renaming: UUID?
@@ -96,6 +130,7 @@ final class UIState: ObservableObject {
 struct ContentView: View {
     @ObservedObject private var store = ProfileStore.shared
     @ObservedObject private var themeStore = ThemeStore.shared
+    @ObservedObject private var transfer = ProfileTransfer.shared
     @StateObject private var ui = UIState()
 
     var body: some View {
@@ -130,6 +165,24 @@ struct ContentView: View {
                 ToolbarItem(placement: .navigation) { AppTitle() }
             }
             ToolbarItemGroup {
+                Button { ui.showSearch.toggle() } label: { Label("Search", systemImage: "magnifyingglass") }
+                    .keyboardShortcut("f", modifiers: .command)
+                    .popover(isPresented: $ui.showSearch) { QuickSearch(store: store) { usage in ui.mode = .keys; ui.selected = usage; ui.showSearch = false } }
+                Button { ui.showDiagnostics.toggle() } label: { Label("Diagnostics", systemImage: "stethoscope") }
+                    .popover(isPresented: $ui.showDiagnostics) { ConnectionDiagnostics(store: store) }
+                Button { ui.showBackups.toggle() } label: { Label("Backups", systemImage: "clock.arrow.circlepath") }
+                    .popover(isPresented: $ui.showBackups) { ProfileBackupsView(store: store) }
+
+                Button { store.history.undo() } label: { Label("Undo", systemImage: "arrow.uturn.backward") }
+                    .help(store.history.undoTitle)
+                    .disabled(ui.bindingKey != nil || !store.history.canUndo)
+                    .contextMenu {
+                        Button(store.history.redoTitle) { store.history.redo() }
+                            .disabled(ui.bindingKey != nil || !store.history.canRedo)
+                    }
+                Button { store.history.redo() } label: { Label("Redo", systemImage: "arrow.uturn.forward") }
+                    .help(store.history.redoTitle)
+                    .disabled(ui.bindingKey != nil || !store.history.canRedo)
                 Button { ui.showSettings.toggle() } label: { Label("Settings", systemImage: "gearshape") }
                     .help("Keyboard layout and startup")
                     .disabled(ui.bindingKey != nil)
@@ -143,6 +196,11 @@ struct ContentView: View {
                     .disabled(ui.bindingKey != nil)
                     .popover(isPresented: $ui.showTheme, arrowEdge: .bottom) { ThemePicker(store: themeStore) }
             }
+        }
+        .alert("Profile Transfer", isPresented: Binding(get: { transfer.message != nil }, set: { if !$0 { transfer.message = nil } })) {
+            Button("OK") { transfer.message = nil }
+        } message: {
+            Text(transfer.message ?? "")
         }
         .alert("Rename Profile", isPresented: Binding(get: { ui.renaming != nil }, set: { if !$0 { ui.renaming = nil } })) {
             TextField("Name", text: $ui.renameText)
@@ -164,8 +222,12 @@ struct ContentView: View {
             }
             // screenshot helper: KEYFORGE_SELECT=<hex usage> opens the editor for that key
             if let h = ProcessInfo.processInfo.environment["KEYFORGE_SELECT"], let u = UInt64(h, radix: 16) { ui.selected = u }
+            // screenshot helper: KEYFORGE_BIND=<hex usage> opens the key-binding popup for that key
+            if let h = ProcessInfo.processInfo.environment["KEYFORGE_BIND"], let u = UInt64(h, radix: 16) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { ui.chooseBinding(for: u) }
+            }
         }
-        .onChange(of: store.activeID) { ui.selected = nil; ui.bindingKey = nil; LiveKeys.shared.recorder = nil }
+        .onChange(of: store.activeID) { PaintBrush.shared.selectedLayerID = nil; ui.selected = nil; ui.bindingKey = nil; LiveKeys.shared.recorder = nil }
         .onChange(of: store.device) {
             ui.bindingKey = nil
             if !store.selectedHasLighting && ui.mode == .lighting { ui.mode = .keys }
@@ -232,6 +294,13 @@ struct SidebarView: View {
             HStack {
                 Text("Profiles").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
                 Spacer()
+                Menu {
+                    Button("Import Profiles…") { ProfileTransfer.shared.importProfiles(into: store) }
+                    Button("Export Profiles…") { ProfileTransfer.shared.exportProfiles(store.profiles) }
+                } label: { Image(systemName: "ellipsis") }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Import or export profiles")
                 Button { store.addProfile() } label: { Image(systemName: "plus") }
                     .buttonStyle(.purpleGlassIcon(26)).help("New profile")
             }
@@ -248,6 +317,7 @@ struct SidebarView: View {
                         .contextMenu {
                             Button("Rename…") { ui.renameText = p.name; ui.renaming = p.id }
                             Button("Duplicate") { store.addProfile(copying: p) }
+                            Button("Export Profile…") { ProfileTransfer.shared.exportProfiles([p]) }
                             Divider()
                             Button("Delete…", role: .destructive) { ui.deleting = p.id }.disabled(store.visible.count < 2)
                         }
@@ -560,6 +630,7 @@ struct KeyEditor: View {
                         Text(Keys.name(key, iso: store.iso)).font(.title3.weight(.bold))
                         Group {
                             if recording { Text("Press the key you want here…").foregroundStyle(theme.pink) }
+                            else if let dual = store.active?.dualRole[key] { Text("Tap \(Keys.name(dual.tap, iso: store.iso)) · Hold \(Keys.name(dual.hold, iso: store.iso))") }
                             else if let action { Text("Now does: \(action.label(iso: store.iso))") }
                             else if let target { Text("Now does: \(Keys.name(target, iso: store.iso))") }
                             else { Text("Works normally") }
@@ -588,11 +659,12 @@ struct KeyEditor: View {
 
                     Button("Default") { withAnimation { store.set(key, to: nil) } }
                         .buttonStyle(.purpleGlass)
-                        .disabled(target == nil && action == nil)
+                        .disabled(target == nil && action == nil && store.active?.dualRole[key] == nil)
                 }
 
                 if !isModifier && key >> 32 == 7 {
-                    ActionEditor(store: store, key: key)
+                    KeyBehaviorEditor(store: store, key: key)
+                ActionEditor(store: store, key: key)
                 }
             }
         }
@@ -723,6 +795,8 @@ struct SettingsPanel: View {
             }
             .toggleStyle(.switch)
             AccessRow()
+            Divider()
+            UpdateSettings()
         }
         .padding(16)
         .frame(width: 380)

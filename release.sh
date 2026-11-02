@@ -10,7 +10,8 @@ TMP=$(mktemp -d)
 for arch in arm64 x86_64; do
   clang -O -arch "$arch" -mmacosx-version-min=15.0 -c Sources/RazerUSB.c -o "$TMP/RazerUSB-$arch.o"
   swiftc -O -wmo -parse-as-library -swift-version 5 -target "$arch-apple-macos15" \
-    Sources/*.swift "$TMP/RazerUSB-$arch.o" -o "$TMP/$arch"
+    Sources/*.swift "$TMP/RazerUSB-$arch.o" -F .build-deps/Sparkle -framework Sparkle \
+    -Xlinker -rpath -Xlinker @executable_path/../Frameworks -o "$TMP/$arch"
 done
 lipo -create "$TMP/arm64" "$TMP/x86_64" -output "$BIN"
 rm -rf "$TMP"
@@ -23,3 +24,8 @@ ZIP="dist/KeyForge-$VERSION.zip"
 rm -f "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"
 echo "Built $ZIP"
+if [ "${KEYFORGE_SKIP_FEED:-0}" = "1" ]; then
+  echo "Update feed signing deferred; ZIP built for local testing only."
+else
+  ./Scripts/make_appcast.sh "$ZIP" "$VERSION"
+fi

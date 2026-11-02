@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.14.1 (build 30)
+- New app icon
+
+## 1.14.0 (build 29)
+- Tap/hold modifier bindings and held keyboard layers, with balanced release on reconfiguration or event-tap interruption
+- Keyboard search (Command-F), device/permission diagnostics and automatic profile/settings backups
+- Backups retain 20 recent snapshots plus daily snapshots for the previous 14 days; restore creates a safety copy
+- Painted lighting overlays with per-layer opacity/brightness over live and software-rendered base effects
+- Advanced input requires Accessibility and applies across keyboards; Caps Lock uses the reserved F20 carrier
+
+## 1.12.0 (build 27)
+- Screen Color options: regional or whole-keyboard matching, transition speed, and ignoring black bars
+- Undo and redo for remaps, actions, lighting and profile edits, including grouped continuous changes
+- Import and export profiles with native JSON file panels; imports create copies and wait for manual activation
+- Check for signed in-app updates through Sparkle, with optional automatic checks
+
+## 1.11.0 (build 26)
+- Screen Color live lighting mirrors display regions across the keyboard, with smooth changes and a display selector
+- Mouse lighting in Sync mode follows the screen’s left, center and right colors
+- Screen capture runs only while the effect is active, with explicit Screen Recording permission and local processing
+
 ## 1.10.2 (build 25)
 - Restore the correctly fitted app icon, removing the extra white plate added by macOS
 - Validate icon geometry and the packaged 1024px icon before building, preventing the original unfitted image from being shipped again

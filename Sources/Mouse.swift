@@ -140,6 +140,7 @@ final class MouseUI: ObservableObject {
 struct MouseTab: View {
     @ObservedObject var store: ProfileStore
     @StateObject private var ui = MouseUI()
+    @ObservedObject private var lighting = MouseLightController.shared
     @ObservedObject private var live = LiveKeys.shared
     @ObservedObject private var tap = KeyTap.shared
     @Environment(\.appTheme) private var theme
@@ -157,8 +158,8 @@ struct MouseTab: View {
                             Spacer()
                         }
                         MouseDrawing(binds: binds, selected: $ui.selected, pressed: live.mouseDown,
-                                     glow: store.mouseLightingProfile?.mouseLighting?
-                                        .resolved(keyboard: store.lightingProfile?.lighting ?? .standard).previewColors)
+                                     glow: lighting.preview(store.mouseLightingProfile?.mouseLighting,
+                                                            keyboard: store.lightingProfile?.lighting ?? .standard))
                             .frame(width: 230, height: 330)
                         // buttons a drawing can't show (side panels of MMO mice…)
                         HStack(spacing: 6) {

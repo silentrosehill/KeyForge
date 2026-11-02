@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import AppKit
 import IOKit.hid
 import ServiceManagement
@@ -13,8 +14,12 @@ struct Profile: Codable, Identifiable, Equatable {
     var lighting: Lighting?
     /// physical key → shortcut / text / app / macro (done by KeyTap, needs Accessibility)
     var actions: [Usage: KeyAction] = [:]
+    var dualRole: [Usage: DualRoleBinding] = [:]
+    var keyboardLayers: [KeyboardLayer] = []
     /// bundle IDs: this profile turns on by itself while one of these apps is in front
     var apps: [String] = []
+    /// Imported profiles cannot turn on automatically until the user selects them.
+    var requiresManualActivation = false
     /// Which keyboard this profile is for (KeyboardDevice.key, or "all").
     var device: String = KeyboardDevice.allKey
     /// mouse button number (2 = middle, 3 = back, 4 = forward, …) → what it does (any mouse)
@@ -32,7 +37,10 @@ extension Profile {
         map = try c.decodeIfPresent([Usage: Usage].self, forKey: .map) ?? [:]
         lighting = try c.decodeIfPresent(Lighting.self, forKey: .lighting)
         actions = (try? c.decodeIfPresent([Usage: KeyAction].self, forKey: .actions)) ?? [:]
+        dualRole = try c.decodeIfPresent([Usage: DualRoleBinding].self, forKey: .dualRole) ?? [:]
+        keyboardLayers = try c.decodeIfPresent([KeyboardLayer].self, forKey: .keyboardLayers) ?? []
         apps = try c.decodeIfPresent([String].self, forKey: .apps) ?? []
+        requiresManualActivation = try c.decodeIfPresent(Bool.self, forKey: .requiresManualActivation) ?? false
         device = try c.decodeIfPresent(String.self, forKey: .device) ?? ""     // "" = from before 1.7, fixed up on load
         mouse = (try? c.decodeIfPresent([Int: MouseAction].self, forKey: .mouse)) ?? [:]
         mouseLighting = try? c.decodeIfPresent(MouseLighting.self, forKey: .mouseLighting)
@@ -137,7 +145,7 @@ final class ProfileStore: ObservableObject {
     @Published var profiles: [Profile] = [] {
         didSet {
             save()
-            if oldValue.map(\.map) != profiles.map(\.map) { applyKeys() }
+            if oldValue.map(\.map) != profiles.map(\.map) || oldValue.map(\.dualRole) != profiles.map(\.dualRole) || oldValue.map(\.keyboardLayers) != profiles.map(\.keyboardLayers) { applyKeys() }
             let before = oldValue.first { $0.id == activeByDevice[lightingKey] }?.lighting
             if before != lightingProfile?.lighting { applyLighting() }
             if !loading { applyMouseLighting() }
@@ -152,12 +160,16 @@ final class ProfileStore: ObservableObject {
     @Published var settings: [String: DeviceSettings] = [:] { didSet { save(); updateTap() } }
     /// Names of keyboards seen before (so their profiles stay listed when unplugged).
     @Published private(set) var known: [String: String] = [:]
-    @Published var enabled = true { didSet { save(); applyKeys() } }
+    @Published var enabled = true { didSet { save(); applyKeys(); updateTap() } }
     @Published private(set) var lastError: String?
 
     /// Per keyboard: the profile the user picked, and keyboards currently switched by the app in front.
     private var manualByDevice: [String: UUID] = [:]
     @Published private(set) var autoDevices: Set<String> = []
+
+    private(set) var history = EditHistory<[Profile]>()
+    let backups = ProfileBackups(fileURL: ProfileStore.fileURL)
+    private var historyChanges: AnyCancellable?
 
     let devices = DeviceWatcher()
     private var loading = false
@@ -211,11 +223,16 @@ final class ProfileStore: ObservableObject {
         }
         manualByDevice = activeByDevice
         loading = false
+        configureHistory()
+        if let data = try? Data(contentsOf: Self.fileURL), (try? JSONDecoder().decode(Saved.self, from: data)) != nil {
+            backups.schedule(data)
+        }
         if migrated { saveNow() }   // write the new format right away
         updateTap()
         devices.onChange = { [weak self] in self?.devicesChanged() }   // plugged in / out: remember it, re-apply
         devices.start()
         apply()
+        KeyTap.shared.onStart = { [weak self] in self?.applyKeys() }
     }
 
     private func devicesChanged() {
@@ -238,10 +255,64 @@ final class ProfileStore: ObservableObject {
 
     private func saveSettingsOnly() { save() }
 
+    private func currentSaved() -> Saved {
+        Saved(profiles: profiles, enabled: enabled, activeByDevice: activeByDevice, settings: settings, known: known, device: device)
+    }
+
     func saveNow() {
         saveWork?.cancel(); saveWork = nil
-        let s = Saved(profiles: profiles, enabled: enabled, activeByDevice: activeByDevice, settings: settings, known: known, device: device)
-        if let data = try? JSONEncoder().encode(s) { try? data.write(to: Self.fileURL, options: .atomic) }
+        if let data = try? JSONEncoder().encode(currentSaved()) {
+            do {
+                try data.write(to: Self.fileURL, options: .atomic)
+                backups.schedule(data)
+            } catch { lastError = "Could not save profiles: \(error.localizedDescription)" }
+        }
+    }
+
+    private func configureHistory() {
+        history.read = { [weak self] in self?.profiles ?? [] }
+        history.restore = { [weak self] in self?.restoreProfiles($0) }
+        historyChanges = history.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+    }
+
+    func restoreBackup(_ entry: ProfileBackups.Entry) throws {
+        let data = try backups.read(entry)
+        let saved = try JSONDecoder().decode(Saved.self, from: data)
+        guard !saved.profiles.isEmpty, saved.profiles.count <= 500,
+              Set(saved.profiles.map(\.id)).count == saved.profiles.count else { throw ProfileBackups.Failure.invalid }
+        // Validate all profiles before changing either disk or live state.
+        _ = try ProfileArchive.decode(data)
+        let safety = try JSONEncoder().encode(currentSaved())
+        try backups.create(safety)
+        try data.write(to: Self.fileURL, options: .atomic)
+        saveWork?.cancel(); saveWork = nil
+        backups.cancelPending()
+        loading = true
+        profiles = saved.profiles
+        enabled = saved.enabled
+        activeByDevice = saved.activeByDevice ?? [:]
+        settings = saved.settings ?? [:]
+        known = saved.known ?? [:]
+        device = saved.device ?? KeyboardDevice.allKey
+        if saved.activeByDevice == nil {
+            let key = saved.scope == .all ? KeyboardDevice.allKey : KeyboardDevice.huntsmanKey
+            for i in profiles.indices where profiles[i].device.isEmpty { profiles[i].device = key }
+            if let id = saved.activeID { activeByDevice[key] = id }
+            settings[KeyboardDevice.huntsmanKey] = DeviceSettings(layout: .huntsman, iso: saved.iso ?? Keys.systemIsISO)
+            known[KeyboardDevice.huntsmanKey] = "Razer Huntsman V2"
+            device = key
+        }
+        for i in profiles.indices where profiles[i].device.isEmpty { profiles[i].device = KeyboardDevice.allKey }
+        ensureProfile(for: device)
+        for (key, id) in activeByDevice where !profiles.contains(where: { $0.id == id && $0.device == key }) {
+            activeByDevice[key] = profiles.first { $0.device == key }?.id
+        }
+        manualByDevice = activeByDevice
+        autoDevices.removeAll()
+        history = EditHistory<[Profile]>()
+        configureHistory()
+        loading = false
+        updateTap(); apply(); save()
     }
 
     // MARK: Keyboards
@@ -337,9 +408,17 @@ final class ProfileStore: ObservableObject {
         for (d, id) in activeByDevice where d != KeyboardDevice.allKey {
             for (b, m) in profile(id)?.mouse ?? [:] { mouse[b] = m }
         }
+        let activeProfiles = activeByDevice.sorted { $0.key < $1.key }.compactMap { profile($0.value) }
+        let dual = activeProfiles.reduce(into: [Usage: DualRoleBinding]()) { $0.merge($1.dualRole) { _, b in b } }
+        KeyBehaviorRuntime.shared.configure(dual: enabled ? dual : [:], layers: enabled ? activeProfiles.flatMap(\.keyboardLayers) : [], iso: iso, baseline: enabled ? activeProfiles.reduce(into: [Usage: Usage]()) { result, profile in
+            let sources = Set(profile.dualRole.keys).union(profile.keyboardLayers.map(\.trigger)).union(profile.keyboardLayers.flatMap { $0.bindings.keys })
+            for key in sources { result[key] = profile.map[key] ?? key }
+        } : [:])
+        if !enabled { merged = [:]; mouse = [:] }
         KeyTap.shared.iso = iso
         if KeyTap.shared.actions != merged { KeyTap.shared.actions = merged }
         if KeyTap.shared.mouse != mouse { KeyTap.shared.mouse = mouse }
+        KeyTap.shared.ensureRunning()
     }
 
     // MARK: Switching
@@ -347,6 +426,9 @@ final class ProfileStore: ObservableObject {
     /// The user picked a profile (sidebar, menu bar, hotkey).
     func select(_ id: UUID) {
         guard let p = profile(id) else { return }
+        if p.requiresManualActivation, let index = profiles.firstIndex(where: { $0.id == id }) {
+            profiles[index].requiresManualActivation = false
+        }
         manualByDevice[p.device] = id
         autoDevices.remove(p.device)
         if device != p.device { selectDevice(p.device) }
@@ -372,7 +454,7 @@ final class ProfileStore: ObservableObject {
         frontApp = (name, game)
 
         var targets: [String: (id: UUID, reason: String)] = [:]
-        for p in profiles where p.apps.contains(key) { targets[p.device] = (p.id, "For \(name)") }
+        for p in profiles where !p.requiresManualActivation && p.apps.contains(key) { targets[p.device] = (p.id, "For \(name)") }
         for (d, st) in settings where targets[d] == nil && st.gameModeOn {
             if game, let g = st.gameProfile, profile(g)?.device == d {
                 targets[d] = (g, "🎮 Game: \(name)")
@@ -433,61 +515,177 @@ final class ProfileStore: ObservableObject {
         set { var st = settings[device] ?? DeviceSettings(layout: layout, iso: iso); st.desktopProfile = newValue; settings[device] = st }
     }
 
-    func setMouse(_ button: Int, _ action: MouseAction?) {
+    private func editMouse(_ button: Int, _ action: MouseAction?) {
         guard let i = activeIndex else { return }
         profiles[i].mouse[button] = action
     }
 
-    func addApp(_ bundleID: String, to id: UUID) {
+    private func editAddApp(_ bundleID: String, to id: UUID) {
         guard let dev = profile(id)?.device else { return }
         for i in profiles.indices where profiles[i].device == dev { profiles[i].apps.removeAll { $0 == bundleID } }   // one app → one profile per keyboard
         guard let i = profiles.firstIndex(where: { $0.id == id }) else { return }
         profiles[i].apps.append(bundleID)
     }
 
-    func removeApp(_ bundleID: String, from id: UUID) {
+    private func editRemoveApp(_ bundleID: String, from id: UUID) {
         guard let i = profiles.firstIndex(where: { $0.id == id }) else { return }
         profiles[i].apps.removeAll { $0 == bundleID }
     }
 
-    // MARK: Editing
+    // MARK: Undoable edits
+
+    @discardableResult
+    private func edit<Result>(_ title: String, coalescing key: String? = nil, _ change: () -> Result) -> Result {
+        let before = profiles
+        let result = change()
+        history.record(before: before, after: profiles, title: title, coalescing: key)
+        return result
+    }
+
+    private func restoreProfiles(_ value: [Profile]) {
+        // Keep the currently selected profile where possible; undoing an import/delete may remove it.
+        profiles = value
+        for (key, id) in activeByDevice where !profiles.contains(where: { $0.device == key && $0.id == id }) {
+            activeByDevice[key] = profiles.first(where: { $0.device == key })?.id
+        }
+        for (key, id) in manualByDevice where !profiles.contains(where: { $0.device == key && $0.id == id }) {
+            manualByDevice[key] = activeByDevice[key]
+        }
+        ensureProfile(for: device)
+        apply(); save()
+    }
 
     func set(_ key: Usage, to target: Usage?) {
+        edit("Remap Key") { editKey(key, to: target) }
+    }
+    func setAction(_ key: Usage, _ action: KeyAction?) {
+        edit("Edit Action", coalescing: "\(activeID?.uuidString ?? "")-action-\(key)") { editAction(key, action) }
+    }
+    func setMouse(_ button: Int, _ action: MouseAction?) {
+        edit("Mouse Action", coalescing: "\(activeID?.uuidString ?? "")-mouse-\(button)") { editMouse(button, action) }
+    }
+    func resetActive() { edit("Reset Keys") { editResetActive() } }
+    @discardableResult
+    func addProfile(name: String = "New Profile", copying: Profile? = nil) -> Profile {
+        edit(copying == nil ? "New Profile" : "Duplicate Profile") { editAddProfile(name: name, copying: copying) }
+    }
+    func rename(_ id: UUID, to name: String) { edit("Rename Profile") { editRename(id, to: name) } }
+    func delete(_ id: UUID) { edit("Delete Profile") { editDelete(id) } }
+    func moveVisible(from offsets: IndexSet, to dest: Int) { edit("Reorder Profiles") { editMoveVisible(from: offsets, to: dest) } }
+    func apply(preset: Preset) { edit("Quick Setup") { editPreset(preset: preset) } }
+    func addApp(_ id: String, to profile: UUID) { edit("Auto-switch App") { editAddApp(id, to: profile) } }
+    func removeApp(_ id: String, from profile: UUID) { edit("Auto-switch App") { editRemoveApp(id, from: profile) } }
+    func setDualRole(_ key: Usage, binding: DualRoleBinding?) {
+        edit("Hold / Tap") {
+            guard let i = profiles.firstIndex(where: { $0.id == activeID }) else { return }
+            profiles[i].dualRole[key] = binding
+            if binding != nil { profiles[i].keyboardLayers.removeAll { $0.trigger == key } }
+            if binding != nil { profiles[i].map[key] = nil; profiles[i].actions[key] = nil }
+        }
+    }
+    func setKeyboardLayers(_ layers: [KeyboardLayer]) {
+        edit("Keyboard Layers") {
+            guard let i = profiles.firstIndex(where: { $0.id == activeID }) else { return }
+            guard Set(layers.map(\.trigger)).count == layers.count else { return }
+            profiles[i].keyboardLayers = layers
+            for trigger in layers.map(\.trigger) { profiles[i].dualRole[trigger] = nil }
+        }
+    }
+    private func behaviorMap(_ profile: Profile?) -> [Usage: Usage] {
+        guard let profile else { return [:] }
+        var map = profile.map
+        guard KeyTap.shared.running else { return map }
+        // Dynamic sources stay visible to the tap; Caps Lock uses F20 to obtain real down/up events.
+        let sources = Set(profile.dualRole.keys).union(profile.keyboardLayers.map(\.trigger)).union(profile.keyboardLayers.flatMap { $0.bindings.keys })
+        for key in sources { map[key] = KeyBehaviorRuntime.source(key) }
+        return map
+    }
+    func setLighting(_ value: Lighting) {
+        let old = active?.lighting
+        let field: String?
+        if old?.brightness != value.brightness { field = "brightness" }
+        else if old?.screenStyle != value.screenStyle || old?.screenIgnoreBlackBars != value.screenIgnoreBlackBars { field = nil }
+        else if old?.screenTransition != value.screenTransition { field = "screen-transition" }
+        else if old?.keyColors != value.keyColors { field = "paint" }
+        else if old?.red != value.red || old?.green != value.green || old?.blue != value.blue { field = "color" }
+        else { field = nil }
+        let key = old?.effect == value.effect ? field.map { "\(activeID?.uuidString ?? "")-light-\(value.effect.rawValue)-\($0)" } : nil
+        edit("Lighting", coalescing: key) { editLighting(value) }
+    }
+    func setMouseLighting(_ value: MouseLighting?) {
+        let old = active?.mouseLighting
+        let field: String?
+        if old?.brightness != value?.brightness { field = "brightness" }
+        else if old?.speed != value?.speed { field = "speed" }
+        else if old?.zones != value?.zones { field = "zones" }
+        else if old?.color != value?.color { field = "color" }
+        else { field = nil }
+        let key = old?.effect == value?.effect ? field.map { "\(activeID?.uuidString ?? "")-mouse-light-\($0)" } : nil
+        edit("Mouse Lighting", coalescing: key) { editMouseLighting(value) }
+    }
+
+    @discardableResult
+    func importProfiles(_ incoming: [Profile]) -> Int {
+        edit("Import Profiles") {
+            for original in incoming {
+                var copy = original
+                copy.id = UUID()
+                if copy.device.isEmpty { copy.device = device }
+                let base = copy.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                var name = base, suffix = 2
+                while profiles.contains(where: { $0.device == copy.device && $0.name == name }) {
+                    name = "\(base) \(suffix)"; suffix += 1
+                }
+                copy.name = name
+                copy.requiresManualActivation = true
+                profiles.append(copy)
+            }
+            return incoming.count
+        }
+    }
+
+    // MARK: Editing
+
+    private func editKey(_ key: Usage, to target: Usage?) {
         guard let i = activeIndex else { return }
         profiles[i].actions[key] = nil
+        profiles[i].dualRole[key] = nil
         if let target, target != key { profiles[i].map[key] = target } else { profiles[i].map[key] = nil }
     }
 
     /// Gives a key a shortcut / text / app / macro job (replaces any plain key change on it).
-    func setAction(_ key: Usage, _ action: KeyAction?) {
+    private func editAction(_ key: Usage, _ action: KeyAction?) {
         guard let i = activeIndex else { return }
         profiles[i].map[key] = nil
         profiles[i].actions[key] = action
+        if action != nil { profiles[i].dualRole[key] = nil }
     }
 
-    func resetActive() {
+    private func editResetActive() {
         guard let i = activeIndex else { return }
         profiles[i].map = [:]
         profiles[i].actions = [:]
+        profiles[i].dualRole = [:]
+        profiles[i].keyboardLayers = []
     }
 
     @discardableResult
-    func addProfile(name: String = "New Profile", copying: Profile? = nil) -> Profile {
+    private func editAddProfile(name: String = "New Profile", copying: Profile? = nil) -> Profile {
         var p = Profile(name: uniqueName(copying.map { "\($0.name) Copy" } ?? name))
         p.device = device
-        if let copying { p.map = copying.map; p.lighting = copying.lighting; p.actions = copying.actions; p.mouse = copying.mouse; p.mouseLighting = copying.mouseLighting }
+        if let copying { p.map = copying.map; p.lighting = copying.lighting; p.actions = copying.actions; p.dualRole = copying.dualRole; p.keyboardLayers = copying.keyboardLayers; p.mouse = copying.mouse; p.mouseLighting = copying.mouseLighting }
         profiles.append(p)
         select(p.id)
         return p
     }
 
-    func rename(_ id: UUID, to name: String) {
+    private func editRename(_ id: UUID, to name: String) {
         let n = name.trimmingCharacters(in: .whitespaces)
         guard !n.isEmpty, let i = profiles.firstIndex(where: { $0.id == id }) else { return }
         profiles[i].name = n
     }
 
-    func delete(_ id: UUID) {
+    private func editDelete(_ id: UUID) {
         guard let p = profile(id), profiles.filter({ $0.device == p.device }).count > 1,
               let i = profiles.firstIndex(where: { $0.id == id }) else { return }
         profiles.remove(at: i)
@@ -495,7 +693,7 @@ final class ProfileStore: ObservableObject {
     }
 
     /// Reorders within the keyboard on screen (the sidebar's drag and drop).
-    func moveVisible(from offsets: IndexSet, to dest: Int) {
+    private func editMoveVisible(from offsets: IndexSet, to dest: Int) {
         var vis = visible
         vis.move(fromOffsets: offsets, toOffset: dest)
         profiles = profiles.filter { $0.device != device } + vis
@@ -517,7 +715,7 @@ final class ProfileStore: ObservableObject {
         var id: String { rawValue }
     }
 
-    func apply(preset: Preset) {
+    private func editPreset(preset: Preset) {
         guard let i = activeIndex else { return }
         switch preset {
         case .macModifiers:
@@ -555,7 +753,7 @@ final class ProfileStore: ObservableObject {
         MouseLightController.shared.apply(mouseLightingProfile?.mouseLighting, keyboard: lightingProfile?.lighting ?? .standard)
     }
 
-    func setMouseLighting(_ m: MouseLighting?) {
+    private func editMouseLighting(_ m: MouseLighting?) {
         guard let i = activeIndex else { return }
         profiles[i].mouseLighting = m
     }
@@ -567,7 +765,7 @@ final class ProfileStore: ObservableObject {
         LightingEngine.shared.update(lightingProfile?.lighting ?? .standard, product: devices.productID, iso: iso)
     }
 
-    func setLighting(_ l: Lighting) {
+    private func editLighting(_ l: Lighting) {
         guard let i = activeIndex else { return }
         profiles[i].lighting = l
     }
@@ -582,14 +780,14 @@ final class ProfileStore: ObservableObject {
     /// "All keyboards" goes on every keyboard first; then each connected keyboard gets its own profile on top.
     func applyKeys() {
         guard !loading else { return }
-        let global = enabled ? (profile(activeByDevice[KeyboardDevice.allKey])?.map ?? [:]) : [:]
+        let global = enabled ? behaviorMap(profile(activeByDevice[KeyboardDevice.allKey])) : [:]
         var err = Self.hidutil(["property", "--set", Self.json(global)])
         if enabled {
             var done = Set<String>()
             for k in devices.keyboards where !done.contains(k.key) {
                 done.insert(k.key)
-                guard let p = profile(activeByDevice[k.key]), !p.map.isEmpty else { continue }
-                let merged = global.merging(p.map) { _, mine in mine }
+                guard let p = profile(activeByDevice[k.key]), !behaviorMap(p).isEmpty else { continue }
+                let merged = global.merging(behaviorMap(p)) { _, mine in mine }
                 let match = "{\"VendorID\":\(k.vendor),\"ProductID\":\(k.product)}"
                 err = Self.hidutil(["property", "--matching", match, "--set", Self.json(merged)]) ?? err
             }

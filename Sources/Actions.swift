@@ -121,7 +121,9 @@ final class KeyTap: ObservableObject {
     nonisolated(unsafe) private static var tap: CFMachPort?
     private var trustTimer: Timer?
 
-    var needed: Bool { !actions.isEmpty || !listeners.isEmpty || !mouse.isEmpty }
+    var onStart: (() -> Void)?
+
+    var needed: Bool { !actions.isEmpty || !listeners.isEmpty || !mouse.isEmpty || KeyBehaviorRuntime.shared.needed }
 
     private func rebuild() {
         var m: [Int64: KeyAction] = [:]
@@ -185,9 +187,10 @@ final class KeyTap: ObservableObject {
     }
 
     private func startTap() {
+        guard ProcessInfo.processInfo.environment["KEYFORGE_DRY"] == nil else { return }
         guard Self.tap == nil else { trusted = true; return }
         // keys, plus the extra mouse buttons (left/right clicks and mouse moves never go through KeyForge)
-        let mask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue)
+        let mask = (1 << CGEventType.flagsChanged.rawValue) | (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue)
             | (1 << CGEventType.otherMouseDown.rawValue) | (1 << CGEventType.otherMouseUp.rawValue)
             | (1 << CGEventType.otherMouseDragged.rawValue)
         guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
@@ -200,10 +203,12 @@ final class KeyTap: ObservableObject {
         CGEvent.tapEnable(tap: tap, enable: true)
         running = true
         trusted = true
+        onStart?()
     }
 
     nonisolated private static func handle(_ type: CGEventType, _ event: CGEvent) -> Unmanaged<CGEvent>? {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            MainActor.assumeIsolated { KeyBehaviorRuntime.shared.reset() }
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
             return Unmanaged.passUnretained(event)
         }
@@ -217,6 +222,7 @@ final class KeyTap: ObservableObject {
             }
             return nil   // the button's own click is swallowed
         }
+        if MainActor.assumeIsolated({ KeyBehaviorRuntime.shared.handle(type, event) }) { return nil }
         let vk = event.getIntegerValueField(.keyboardEventKeycode)
         let action = byVK[vk]
         if type == .keyDown {
