@@ -29,7 +29,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>1.10.2</string>
   <key>CFBundleVersion</key><string>25</string>
-  <key>NSHumanReadableCopyright</key><string>Key remapping and profiles for the Razer Huntsman V2 — built with Claude.</string>
+  <key>NSHumanReadableCopyright</key><string>Key remapping and profiles for the Razer Huntsman V2.</string>
   <key>LSMinimumSystemVersion</key><string>15.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSAudioCaptureUsageDescription</key><string>KeyForge listens to what your Mac plays so the Music lighting effect can dance to it. Nothing is recorded or saved.</string>
