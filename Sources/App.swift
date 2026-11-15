@@ -97,7 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationWillTerminate(_ n: Notification) {
-        MainActor.assumeIsolated { KeyBehaviorRuntime.shared.reset(); ProfileStore.shared.saveNow() }   // flush a pending save
+        MainActor.assumeIsolated { SpaceShortcuts.restore(); KeyBehaviorRuntime.shared.reset(); ProfileStore.shared.saveNow() }   // flush a pending save
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool { true }

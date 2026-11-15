@@ -25,6 +25,9 @@ struct Lighting: Codable, Equatable {
     var red = 0.70, green = 0.23, blue = 0.93
     var brightness = 1.0
     var waveRight = true
+    /// Reactive: the color of the whole keyboard between presses (0 = dark, which the keyboard does by itself).
+    /// Pressed keys flash the main color and fade back to this.
+    var reactiveBase: UInt32 = 0
     /// Per Key: painted keys → 0xRRGGBB
     var keyColors: [Usage: UInt32] = [:]
 
@@ -45,6 +48,7 @@ struct Lighting: Codable, Equatable {
         blue = try c.decodeIfPresent(Double.self, forKey: .blue) ?? blue
         brightness = try c.decodeIfPresent(Double.self, forKey: .brightness) ?? brightness
         waveRight = try c.decodeIfPresent(Bool.self, forKey: .waveRight) ?? waveRight
+        reactiveBase = (try? c.decodeIfPresent(UInt32.self, forKey: .reactiveBase)) ?? 0
         keyColors = try c.decodeIfPresent([Usage: UInt32].self, forKey: .keyColors) ?? [:]
     }
 
@@ -528,6 +532,26 @@ struct LightingCard: View {
                     }
                 }
                 .disabled(l.effect == .off)
+
+                if l.effect == .reactive {
+                    HStack(spacing: 10) {
+                        Image(systemName: "bolt.fill").foregroundStyle(Color(hex: cur))
+                        Text("Pressed keys flash the color above, then fade back to the keyboard color.")
+                            .font(.callout).foregroundStyle(.secondary)
+                        Spacer()
+                        ColorPicker("Keyboard color", selection: Binding(get: { Color(hex: l.reactiveBase) },
+                                                                         set: { var n = l; n.reactiveBase = $0.hex; lighting.wrappedValue = n }),
+                                    supportsOpacity: false)
+                        Button("Dark") { var n = l; n.reactiveBase = 0; lighting.wrappedValue = n }
+                            .buttonStyle(.purpleGlass)
+                            .disabled(l.reactiveBase == 0)
+                            .help("Keys stay dark between presses (works even when KeyForge isn't running)")
+                    }
+                    if l.reactiveBase != 0 {
+                        Text("A keyboard color is drawn by KeyForge, so it needs the app running.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
 
                 if l.effect == .perKey {
                     HStack(spacing: 10) {

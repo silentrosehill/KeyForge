@@ -17,6 +17,7 @@ enum AppWatcher {
         }
         // the app already in front when KeyForge starts (or the one right behind KeyForge's own window)
         lastPID = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+        SpaceShortcuts.restore()   // left off by a crash: put back before deciding again
         ProfileStore.shared.frontAppChanged(frontmostOther)
         // belt and braces: also look once a second (Wine games don't always announce that they came to the front)
         poll = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
@@ -264,6 +265,7 @@ enum ProfileHUD {
 struct GameModeCard: View {
     @ObservedObject var store: ProfileStore
     @Environment(\.appTheme) private var theme
+    @State private var blockSpaces = SpaceShortcuts.enabled
 
     var body: some View {
         let on = store.gameModeOn
@@ -284,6 +286,10 @@ struct GameModeCard: View {
                     choice("🖥 Everywhere else", store.desktopProfile, profiles) { store.desktopProfile = $0; store.setGameMode(true) }
                     Spacer()
                 }
+                Toggle("Block Ctrl + arrows in games (no desktop switching)", isOn: Binding(
+                    get: { blockSpaces },
+                    set: { v in blockSpaces = v; SpaceShortcuts.enabled = v; store.setGameMode(true) }))
+                    .toggleStyle(.checkbox).font(.callout)
                 // live status
                 HStack(spacing: 6) {
                     Circle().fill(store.frontApp?.isGame == true ? Color.green : theme.purple).frame(width: 7, height: 7)

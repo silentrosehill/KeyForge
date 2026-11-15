@@ -452,6 +452,7 @@ final class ProfileStore: ObservableObject {
         let game = GameDetector.isGame(app)
         let name = app.localizedName ?? key
         frontApp = (name, game)
+        SpaceShortcuts.setBlocked(game && settings.values.contains { $0.gameModeOn })
 
         var targets: [String: (id: UUID, reason: String)] = [:]
         for p in profiles where !p.requiresManualActivation && p.apps.contains(key) { targets[p.device] = (p.id, "For \(name)") }
@@ -503,6 +504,7 @@ final class ProfileStore: ObservableObject {
         st.gameMode = on
         settings[device] = st
         if on { frontAppChanged(AppWatcher.frontmostOther) }
+        else if !settings.values.contains(where: \.gameModeOn) { SpaceShortcuts.restore() }
     }
 
     /// Game ↔ Desktop profiles of the keyboard on screen.
@@ -607,6 +609,7 @@ final class ProfileStore: ObservableObject {
         else if old?.screenStyle != value.screenStyle || old?.screenIgnoreBlackBars != value.screenIgnoreBlackBars { field = nil }
         else if old?.screenTransition != value.screenTransition { field = "screen-transition" }
         else if old?.keyColors != value.keyColors { field = "paint" }
+        else if old?.reactiveBase != value.reactiveBase { field = "reactive-base" }
         else if old?.red != value.red || old?.green != value.green || old?.blue != value.blue { field = "color" }
         else { field = nil }
         let key = old?.effect == value.effect ? field.map { "\(activeID?.uuidString ?? "")-light-\(value.effect.rawValue)-\($0)" } : nil

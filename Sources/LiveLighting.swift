@@ -62,7 +62,8 @@ final class LightingEngine: ObservableObject {
         keys = Keys.huntsmanV2(iso: iso)
         let e = lighting.effect
         // who needs key presses / audio
-        let wantsKeys = e == .ripple || e == .heatmap || (e == .reactive && lighting.layers.contains(where: { $0.enabled }))
+        let reactiveLive = e == .reactive && (lighting.reactiveBase != 0 || lighting.layers.contains(where: { $0.enabled }))
+        let wantsKeys = e == .ripple || e == .heatmap || reactiveLive
         if wantsKeys != (KeyTap.shared.listeners["engine"] != nil) {
             KeyTap.shared.listeners["engine"] = wantsKeys ? { [weak self] u in self?.pressed(u) } : nil
         }
@@ -90,7 +91,7 @@ final class LightingEngine: ObservableObject {
             capsTimer?.invalidate(); capsTimer = nil; capsOn = false
         }
 
-        if e.isLive || lighting.layers.contains(where: { $0.enabled }) {
+        if e.isLive || reactiveLive || lighting.layers.contains(where: { $0.enabled }) {
             if timer == nil {
                 start = CFAbsoluteTimeGetCurrent()
                 let t = Timer(timeInterval: 1 / Self.fps, repeats: true) { [weak self] _ in
@@ -151,13 +152,13 @@ final class LightingEngine: ObservableObject {
             }
             f = screenFrame
         default:
-            guard lighting.layers.contains(where: { $0.enabled }) else { return }
+            guard lighting.layers.contains(where: { $0.enabled }) || (lighting.effect == .reactive && lighting.reactiveBase != 0) else { return }
             for k in keys {
                 switch lighting.effect {
                 case .spectrum: f[k.usage] = Color.hueShift(0xFF2222, t * 0.08)
                 case .wave: f[k.usage] = Color.hueShift(0xFF2222, k.x / Keys.layoutWidth + t * (lighting.waveRight ? -0.2 : 0.2))
                 case .breathing: f[k.usage] = Color.scale(base, 0.5 + 0.5 * sin(t * 2))
-                case .reactive: f[k.usage] = Color.scale(base, max(0, 1 - (t - (reactiveKeys[k.usage] ?? -10)) / 0.6))
+                case .reactive: f[k.usage] = Color.mix(lighting.reactiveBase, base, 1 - (t - (reactiveKeys[k.usage] ?? -10)) / 0.6)
                 case .off: f[k.usage] = 0
                 default: f[k.usage] = lighting.hex(for: k.usage)
                 }
