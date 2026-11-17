@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.15.1 (build 32)
+- New Liquid Glass app icon with a bold K keycap
+
 ## 1.15.0 (build 31)
 - Reactive lighting: choose the keyboard color between presses as well as the color keys flash when pressed (Dark keeps the keyboard's own built-in effect)
 - Game Mode turns off macOS's Ctrl + arrow shortcuts (switch desktop, Mission Control, App Exposé) while a game is in front, and puts them back afterwards

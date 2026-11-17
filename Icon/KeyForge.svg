@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>KeyForge Glass · Bold-K</title>
+  <defs>
+    <rect id="tile" x="100" y="100" width="824" height="824" rx="190"/>
+    <path id="face" d="M314 370c4-32 30-56 62-56h272c32 0 58 24 62 56l24 245c4 37-25 69-62 69H352c-37 0-66-32-62-69z"/>
+    <path id="base" d="M290 625h444v35c0 37-28 66-65 66H355c-37 0-65-29-65-66z"/>
+    <clipPath id="tile-clip"><use href="#tile"/></clipPath>
+    <clipPath id="face-clip"><use href="#face"/></clipPath>
+    <clipPath id="base-clip"><use href="#base"/></clipPath>
+    <radialGradient id="rose" gradientUnits="userSpaceOnUse" cx="220" cy="290" r="440">
+      <stop stop-color="#ff83b1" stop-opacity=".88"/>
+      <stop offset="1" stop-color="#ff83b1" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="blue" gradientUnits="userSpaceOnUse" cx="858" cy="368" r="465">
+      <stop stop-color="#65caff" stop-opacity=".9"/>
+      <stop offset="1" stop-color="#65caff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="peach" gradientUnits="userSpaceOnUse" cx="318" cy="833" r="422">
+      <stop stop-color="#ffc181" stop-opacity=".94"/>
+      <stop offset="1" stop-color="#ffc181" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="lilac" gradientUnits="userSpaceOnUse" cx="780" cy="773" r="386">
+      <stop stop-color="#b397fb" stop-opacity=".92"/>
+      <stop offset="1" stop-color="#b397fb" stop-opacity="0"/>
+    </radialGradient>
+    <g id="color-field">
+      <rect width="1024" height="1024" fill="url(#rose)"/>
+      <rect width="1024" height="1024" fill="url(#blue)"/>
+      <rect width="1024" height="1024" fill="url(#peach)"/>
+      <rect width="1024" height="1024" fill="url(#lilac)"/>
+    </g>
+    <linearGradient id="tile-rim" x1="10%" x2="90%" y2="100%">
+      <stop stop-color="white"/>
+      <stop offset=".55" stop-color="white" stop-opacity=".4"/>
+      <stop offset="1" stop-color="#8f7ac1" stop-opacity=".24"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="12%" x2="84%" y2="100%">
+      <stop stop-color="white" stop-opacity=".8"/>
+      <stop offset=".35" stop-color="white" stop-opacity=".34"/>
+      <stop offset=".67" stop-color="#f1f3ff" stop-opacity=".18"/>
+      <stop offset="1" stop-color="white" stop-opacity=".66"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" x2="100%">
+      <stop stop-color="#f78ca7"/>
+      <stop offset=".26" stop-color="#ffd6a9"/>
+      <stop offset=".53" stop-color="#fff7f0"/>
+      <stop offset=".79" stop-color="#c1b6f6"/>
+      <stop offset="1" stop-color="#91c1ef"/>
+    </linearGradient>
+    <linearGradient id="edge-depth" x2="0" y2="100%">
+      <stop offset=".36" stop-color="#585580" stop-opacity=".36"/>
+      <stop offset="1" stop-color="#545180" stop-opacity=".14"/>
+    </linearGradient>
+    <linearGradient id="face-rim" x1="22%" x2="73%" y2="100%">
+      <stop stop-color="white"/>
+      <stop offset=".45" stop-color="#fffaff" stop-opacity=".75"/>
+      <stop offset=".64" stop-color="#847bba" stop-opacity=".24"/>
+      <stop offset="1" stop-color="white"/>
+    </linearGradient>
+    <linearGradient id="legend" x1="0" x2="100%" y2="100%">
+      <stop stop-color="#6d4b70"/>
+      <stop offset="1" stop-color="#384c7c"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-70%" width="160%" height="240%" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="24"/>
+    </filter>
+  </defs>
+
+  <g clip-path="url(#tile-clip)">
+    <use href="#tile" fill="#fff"/>
+    <use href="#color-field" opacity=".77"/>
+    <use href="#tile" fill="none" stroke="url(#tile-rim)" stroke-width="8"/>
+    <g transform="translate(-113 -115) scale(1.22)">
+    <ellipse cx="516" cy="704" rx="227" ry="39" fill="#594773" opacity=".24" filter="url(#shadow)"/>
+
+    <use href="#base" fill="url(#edge)"/>
+    <use href="#base" fill="url(#edge-depth)"/>
+    <use href="#base" fill="none" stroke="#766298" stroke-opacity=".2" stroke-width="3"/>
+    <path d="M298 669c4 29 26 51 55 51h318c29 0 52-22 55-51" fill="none" stroke="url(#face-rim)" stroke-opacity=".83" stroke-width="4" stroke-linecap="round" clip-path="url(#base-clip)"/>
+
+    <g clip-path="url(#face-clip)">
+      <use href="#face" fill="#f8f7ff"/>
+      <use href="#color-field" transform="translate(118 181) scale(.77 .61)"/>
+      <use href="#face" fill="url(#glass)"/>
+      <use href="#face" fill="none" stroke="url(#face-rim)" stroke-width="15"/>
+    </g>
+    <use href="#face" fill="none" stroke="#8273ab" stroke-opacity=".24" stroke-width="2"/>
+    <g transform="translate(-94 -90) scale(1.19)">
+    <path d="M426 412h51v74l64-74h65l-79 89 84 86h-67l-67-71v71h-51z" fill="#242841" stroke="#fff" stroke-opacity=".54" stroke-width="2" stroke-linejoin="round"/>
+    </g>
+    </g>
+  </g>
+</svg>
